@@ -1,10 +1,10 @@
 {
-  "name": "plugin-template",
+  "name": "plugin-superset",
   "build": {
     "context": ".",
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspaces/plugin-template",
+  "workspaceFolder": "/workspaces/plugin-superset",
   "forwardPorts": [8080],
   "customizations": {
     "vscode": {
