@@ -1,6 +1,7 @@
 @PluginSubGroup(
-    category = PluginSubGroup.PluginCategory.DATA,
-    description = "Tasks for Apache Superset charts."
+    title = "Superset charts",
+    description = "Tasks for Apache Superset charts.",
+    categories = PluginSubGroup.PluginCategory.DATA
 )
 package io.kestra.plugin.superset.charts;
 

@@ -1,5 +1,7 @@
 package io.kestra.plugin.superset.dashboards;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.HttpResponse;
 import io.kestra.core.http.client.HttpClient;
@@ -8,12 +10,12 @@ import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.conditions.ConditionContext;
 import io.kestra.core.models.executions.Execution;
-import io.kestra.core.models.executions.ExecutionTrigger;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.triggers.AbstractTrigger;
 import io.kestra.core.models.triggers.PollingTriggerInterface;
 import io.kestra.core.models.triggers.TriggerContext;
 import io.kestra.core.models.triggers.TriggerOutput;
+import io.kestra.core.models.triggers.TriggerService;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -66,76 +68,75 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
 
     @Schema(title = "The Superset API base URL")
     @NotNull
+    @PluginProperty(group = "connection")
     protected Property<String> url;
 
     @Schema(title = "The Superset username")
     @NotNull
+    @PluginProperty(group = "connection")
     protected Property<String> username;
 
     @Schema(title = "The Superset password")
     @NotNull
-    @PluginProperty(secret = true)
+    @PluginProperty(group = "connection", secret = true)
     @ToString.Exclude
     protected Property<String> password;
 
-    @Schema(title = "Authentication provider", description = "Defaults to db")
+    @Schema(title = "Authentication provider")
     @Builder.Default
-    protected Property<String> provider = Property.of("db");
+    @PluginProperty(group = "connection")
+    protected Property<String> provider = Property.ofValue("db");
 
     @Override
     public Optional<Execution> evaluate(ConditionContext conditionContext, TriggerContext context) throws Exception {
         RunContext runContext = conditionContext.getRunContext();
 
         String baseUrl = runContext.render(this.url).as(String.class).orElseThrow();
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
         String user = runContext.render(this.username).as(String.class).orElseThrow();
         String pass = runContext.render(this.password).as(String.class).orElseThrow();
         String loginProvider = runContext.render(this.provider).as(String.class).orElse("db");
 
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        }
-
-        try (HttpClient client = new HttpClient(runContext)) {
-            // 1. Authenticate
+        try (HttpClient client = HttpClient.builder().runContext(runContext).build()) {
             HttpRequest loginReq = HttpRequest.builder()
                 .uri(URI.create(baseUrl + "/security/login"))
                 .method("POST")
                 .body(HttpRequest.JsonRequestBody.builder().content(Map.of("username", user, "password", pass, "provider", loginProvider)).build())
                 .build();
 
-            HttpResponse<Map<String, Object>> loginResp = client.request(loginReq, JacksonMapper.ofJson().getTypeFactory().constructMapType(Map.class, String.class, Object.class));
-            String accessToken = (String) loginResp.getBody().get("access_token");
+            HttpResponse<String> loginResp = client.request(loginReq, String.class);
+            Map<String, Object> tokenMap = JacksonMapper.ofJson().readValue(loginResp.getBody(), Map.class);
+            String accessToken = (String) tokenMap.get("access_token");
 
-            // 2. Fetch latest dashboard ordered by changed_on desc
             HttpRequest listReq = HttpRequest.builder()
                 .uri(URI.create(baseUrl + "/dashboard/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page_size:1)"))
                 .method("GET")
                 .addHeader("Authorization", "Bearer " + accessToken)
                 .build();
 
-            HttpResponse<Map<String, Object>> listResp = client.request(listReq, JacksonMapper.ofJson().getTypeFactory().constructMapType(Map.class, String.class, Object.class));
-            List<Map<String, Object>> result = (List<Map<String, Object>>) listResp.getBody().get("result");
+            HttpResponse<String> listResp = client.request(listReq, String.class);
+            DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
 
-            if (result == null || result.isEmpty()) {
+            if (response.getResult() == null || response.getResult().isEmpty()) {
                 return Optional.empty();
             }
 
-            Map<String, Object> latestDashboard = result.get(0);
-            String dashboardId = String.valueOf(latestDashboard.get("id"));
-            String dashboardTitle = (String) latestDashboard.get("dashboard_title");
-            String changedOn = (String) latestDashboard.get("changed_on");
+            DashboardItem latest = response.getResult().getFirst();
+            String dashboardId = String.valueOf(latest.getId());
+            String dashboardTitle = latest.getDashboardTitle();
+            String changedOn = latest.getChangedOn();
 
-            // Key-Value Watermark check
-            String watermarkKey = "superset_wm_" + context.getFlowId() + "_" + this.getId();
+            String watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId() + "_" + this.getId().length() + "_" + this.getId();
             var kvStore = runContext.namespaceKv(context.getNamespace());
-            Optional<String> lastSeen = kvStore.getValue(watermarkKey).map(Object::toString);
+            Optional<Object> lastSeen = kvStore.getValue(watermarkKey);
 
-            if (lastSeen.isPresent() && lastSeen.get().equals(changedOn)) {
+            if (lastSeen.isPresent() && changedOn.equals(lastSeen.get().toString())) {
                 return Optional.empty();
             }
 
-            // Advance watermark
-            kvStore.set(watermarkKey, new io.kestra.core.models.kv.KVEntry(watermarkKey, changedOn));
+            kvStore.put(watermarkKey, changedOn);
 
             Output output = Output.builder()
                 .dashboardId(dashboardId)
@@ -143,15 +144,7 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
                 .changedOn(changedOn)
                 .build();
 
-            Execution execution = Execution.builder()
-                .id(runContext.getTriggerExecutionId())
-                .namespace(context.getNamespace())
-                .flowId(context.getFlowId())
-                .flowRevision(context.getFlowRevision())
-                .state(new io.kestra.core.models.flows.State())
-                .trigger(ExecutionTrigger.of(this, output))
-                .build();
-
+            Execution execution = TriggerService.generateExecution(this, conditionContext, context, output);
             return Optional.of(execution);
         }
     }
@@ -166,6 +159,24 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         private String dashboardTitle;
 
         @Schema(title = "Timestamp of modification")
+        private String changedOn;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DashboardListResponse {
+        private List<DashboardItem> result;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DashboardItem {
+        private Object id;
+        @JsonProperty("dashboard_title")
+        private String dashboardTitle;
+        @JsonProperty("changed_on")
         private String changedOn;
     }
 }
