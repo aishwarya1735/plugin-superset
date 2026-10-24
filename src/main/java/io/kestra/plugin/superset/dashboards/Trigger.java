@@ -63,26 +63,27 @@ import java.util.Optional;
 )
 public class Trigger extends AbstractTrigger implements PollingTriggerInterface, TriggerOutput<Trigger.Output> {
 
+    @Schema(title = "Interval between polling evaluations")
     @Builder.Default
     private final Duration interval = Duration.ofMinutes(5);
 
-    @Schema(title = "The Superset API base URL")
+    @Schema(title = "The Superset API base URL", description = "Base URL of your Apache Superset instance (e.g. https://superset.example.com/api/v1)")
     @NotNull
     @PluginProperty(group = "connection")
     protected Property<String> url;
 
-    @Schema(title = "The Superset username")
+    @Schema(title = "The Superset username", description = "Username used to authenticate against Apache Superset")
     @NotNull
     @PluginProperty(group = "connection")
     protected Property<String> username;
 
-    @Schema(title = "The Superset password")
+    @Schema(title = "The Superset password", description = "Password associated with the username")
     @NotNull
     @PluginProperty(group = "connection", secret = true)
     @ToString.Exclude
     protected Property<String> password;
 
-    @Schema(title = "Authentication provider")
+    @Schema(title = "Authentication provider", description = "Authentication provider, defaults to db")
     @Builder.Default
     @PluginProperty(group = "connection")
     protected Property<String> provider = Property.ofValue("db");
@@ -91,27 +92,27 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     public Optional<Execution> evaluate(ConditionContext conditionContext, TriggerContext context) throws Exception {
         RunContext runContext = conditionContext.getRunContext();
 
-        String baseUrl = runContext.render(this.url).as(String.class).orElseThrow();
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        String rUrl = runContext.render(this.url).as(String.class).orElseThrow(() -> new IllegalArgumentException("url is required"));
+        if (rUrl.endsWith("/")) {
+            rUrl = rUrl.substring(0, rUrl.length() - 1);
         }
-        String user = runContext.render(this.username).as(String.class).orElseThrow();
-        String pass = runContext.render(this.password).as(String.class).orElseThrow();
-        String loginProvider = runContext.render(this.provider).as(String.class).orElse("db");
+        String rUser = runContext.render(this.username).as(String.class).orElseThrow(() -> new IllegalArgumentException("username is required"));
+        String rPass = runContext.render(this.password).as(String.class).orElseThrow(() -> new IllegalArgumentException("password is required"));
+        String rProvider = runContext.render(this.provider).as(String.class).orElse("db");
 
         try (HttpClient client = HttpClient.builder().runContext(runContext).build()) {
             HttpRequest loginReq = HttpRequest.builder()
-                .uri(URI.create(baseUrl + "/security/login"))
+                .uri(URI.create(rUrl + "/security/login"))
                 .method("POST")
-                .body(HttpRequest.JsonRequestBody.builder().content(Map.of("username", user, "password", pass, "provider", loginProvider)).build())
+                .body(HttpRequest.JsonRequestBody.builder().content(Map.of("username", rUser, "password", rPass, "provider", rProvider, "refresh", true)).build())
                 .build();
 
             HttpResponse<String> loginResp = client.request(loginReq, String.class);
-            Map<String, Object> tokenMap = JacksonMapper.ofJson().readValue(loginResp.getBody(), Map.class);
+            Map<String, Object> tokenMap = JacksonMapper.ofJson().readValue(loginResp.getBody(), JacksonMapper.ofJson().getTypeFactory().constructMapType(Map.class, String.class, Object.class));
             String accessToken = (String) tokenMap.get("access_token");
 
             HttpRequest listReq = HttpRequest.builder()
-                .uri(URI.create(baseUrl + "/dashboard/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page_size:1)"))
+                .uri(URI.create(rUrl + "/dashboard/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page_size:10)"))
                 .method("GET")
                 .addHeader("Authorization", "Bearer " + accessToken)
                 .build();
@@ -130,13 +131,18 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
 
             String watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId() + "_" + this.getId().length() + "_" + this.getId();
             var kvStore = runContext.namespaceKv(context.getNamespace());
-            Optional<Object> lastSeen = kvStore.getValue(watermarkKey);
+            var lastSeen = kvStore.getValue(watermarkKey);
 
-            if (lastSeen.isPresent() && changedOn.equals(lastSeen.get().toString())) {
+            if (lastSeen.isEmpty()) {
+                kvStore.put(watermarkKey, new io.kestra.core.storages.kv.KVEntry(watermarkKey, changedOn));
                 return Optional.empty();
             }
 
-            kvStore.put(watermarkKey, changedOn);
+            if (changedOn.equals(lastSeen.get().toString())) {
+                return Optional.empty();
+            }
+
+            kvStore.put(watermarkKey, new io.kestra.core.storages.kv.KVEntry(watermarkKey, changedOn));
 
             Output output = Output.builder()
                 .dashboardId(dashboardId)
@@ -173,9 +179,11 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DashboardItem {
-        private Object id;
+        private Integer id;
+
         @JsonProperty("dashboard_title")
         private String dashboardTitle;
+
         @JsonProperty("changed_on")
         private String changedOn;
     }

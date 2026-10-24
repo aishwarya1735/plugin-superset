@@ -1,4 +1,3 @@
-
 package io.kestra.plugin.superset.charts;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -19,10 +18,11 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
+import reactor.core.publisher.Flux;
 
+import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStream;
+import java.io.FileWriter;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,7 +35,10 @@ import java.util.Map;
 @NoArgsConstructor
 @Schema(
     title = "Fetch chart data",
-    description = "Queries chart data via POST /chart/data and outputs rows using FetchType."
+    description = """
+        Queries chart data via POST /chart/data and outputs rows using FetchType.
+        Rows can be fetched in memory or stored as Amazon Ion in internal storage.
+        """
 )
 @Plugin(
     examples = {
@@ -52,8 +55,15 @@ import java.util.Map;
                     username: "{{ secret('SUPERSET_USER') }}"
                     password: "{{ secret('SUPERSET_PASSWORD') }}"
                     chartPayload:
+                      datasource:
+                        id: 1
+                        type: table
                       queries:
-                        - extras: {}
+                        - columns: []
+                          metrics: ["count"]
+                          row_limit: 1000
+                      result_format: json
+                      result_type: full
                 """
         )
     }
@@ -73,7 +83,7 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
     @Override
     public Output run(RunContext runContext) throws Exception {
         String baseUrl = getBaseUrl(runContext);
-        Map<String, Object> payload = runContext.render(this.chartPayload).asMap(String.class, Object.class);
+        var rPayload = runContext.render(this.chartPayload).asMap(String.class, Object.class);
         FetchType fetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
 
         List<Map<String, Object>> allRows = new ArrayList<>();
@@ -85,17 +95,19 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
                 .uri(URI.create(baseUrl + "/chart/data"))
                 .method("POST")
                 .addHeader("Authorization", "Bearer " + token)
-                .body(HttpRequest.JsonRequestBody.builder().content(payload).build())
+                .body(HttpRequest.JsonRequestBody.builder().content(rPayload).build())
                 .build();
 
             HttpResponse<String> dataResp = client.request(dataReq, String.class);
             ChartDataResponse response = JacksonMapper.ofJson().readValue(dataResp.getBody(), ChartDataResponse.class);
 
-            if (response.getResult() != null) {
-                for (ChartResultItem item : response.getResult()) {
-                    if (item.getData() != null) {
-                        allRows.addAll(item.getData());
-                    }
+            if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
+                throw new IllegalArgumentException("Superset /chart/data returned no result rows");
+            }
+
+            for (ChartResultItem item : response.getResult()) {
+                if (item.getData() != null) {
+                    allRows.addAll(item.getData());
                 }
             }
         }
@@ -104,21 +116,15 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
             .size(allRows.size());
 
         switch (fetchMode) {
-            case FETCH_ONE -> {
-                outputBuilder.row(!allRows.isEmpty() ? allRows.getFirst() : null);
-            }
-            case FETCH -> {
-                outputBuilder.rows(allRows);
-            }
+            case FETCH_ONE -> outputBuilder.row(!allRows.isEmpty() ? allRows.getFirst() : null);
+            case FETCH -> outputBuilder.rows(allRows);
             case STORE -> {
                 File tempFile = runContext.workingDir().createTempFile(".ion").toFile();
-                try (OutputStream outputStream = new FileOutputStream(tempFile)) {
-                    FileSerde.writeAll(outputStream, allRows);
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                    FileSerde.writeAll(writer, Flux.fromIterable(allRows)).block();
                 }
                 URI storageUri = runContext.storage().put(tempFile.toURI());
                 outputBuilder.uri(storageUri);
-            }
-            default -> {
             }
         }
 

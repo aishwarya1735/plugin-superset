@@ -5,10 +5,10 @@ import io.kestra.core.http.HttpResponse;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
+import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.runners.RunContext;
-import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.plugin.superset.SupersetConnection;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotEmpty;
@@ -18,7 +18,6 @@ import lombok.experimental.SuperBuilder;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
-import java.util.Map;
 
 @SuperBuilder
 @ToString
@@ -43,7 +42,7 @@ import java.util.Map;
                     url: "{{ secret('SUPERSET_URL') }}"
                     username: "{{ secret('SUPERSET_USER') }}"
                     password: "{{ secret('SUPERSET_PASSWORD') }}"
-                    dashboardIds: [1, 2]
+                    dashboardIds:
                 """
         )
     }
@@ -52,59 +51,33 @@ public class Export extends SupersetConnection implements RunnableTask<Export.Ou
 
     @Schema(title = "List of Dashboard IDs to export")
     @NotEmpty
+    @PluginProperty(group = "main")
     private Property<List<Integer>> dashboardIds;
 
     @Override
     public Output run(RunContext runContext) throws Exception {
-        String baseUrl = runContext.render(this.url).as(String.class).orElseThrow();
-        String user = runContext.render(this.username).as(String.class).orElseThrow();
-        String pass = runContext.render(this.password).as(String.class).orElseThrow();
-        String loginProvider = runContext.render(this.provider).as(String.class).orElse("db");
+        String baseUrl = getBaseUrl(runContext);
         List<Integer> ids = runContext.render(this.dashboardIds).asList(Integer.class);
 
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        }
-
-        try (HttpClient client = new HttpClient(runContext)) {
-            // 1. JWT Authentication
-            String loginUrl = baseUrl + "/security/login";
-            Map<String, Object> loginPayload = Map.of(
-                "username", user,
-                "password", pass,
-                "provider", loginProvider,
-                "refresh", true
-            );
-
-            HttpRequest loginReq = HttpRequest.builder()
-                .uri(URI.create(loginUrl))
-                .method("POST")
-                .body(HttpRequest.JsonRequestBody.builder().content(loginPayload).build())
-                .build();
-
-            HttpResponse<Map<String, Object>> loginResp = client.request(loginReq, JacksonMapper.ofJson().getTypeFactory().constructMapType(Map.class, String.class, Object.class));
-            String accessToken = (String) loginResp.getBody().get("access_token");
-
-            // Build query parameter containing the IDs: ?q=(1,2)
-            StringBuilder queryIds = new StringBuilder("?q=(");
-            for (int i = 0; i < ids.size(); i++) {
-                queryIds.append(ids.get(i));
-                if (i < ids.size() - 1) {
-                    queryIds.append(",");
-                }
+        StringBuilder queryIds = new StringBuilder("?q=!([");
+        for (int i = 0; i < ids.size(); i++) {
+            queryIds.append(ids.get(i));
+            if (i < ids.size() - 1) {
+                queryIds.append(",");
             }
-            queryIds.append(")");
+        }
+        queryIds.append("])");
 
-            // 2. Export Dashboards (GET /dashboard/export/)
+        try (HttpClient client = createHttpClient(runContext)) {
+            String token = login(client, runContext);
+
             HttpRequest exportReq = HttpRequest.builder()
                 .uri(URI.create(baseUrl + "/dashboard/export/" + queryIds))
                 .method("GET")
-                .addHeader("Authorization", "Bearer " + accessToken)
+                .addHeader("Authorization", "Bearer " + token)
                 .build();
 
             HttpResponse<InputStream> exportResp = client.request(exportReq, InputStream.class);
-
-            // Put the ZIP stream into Kestra's internal storage
             URI storageUri = runContext.storage().put(URI.create("superset-dashboards-export.zip"), exportResp.getBody());
 
             return Output.builder()

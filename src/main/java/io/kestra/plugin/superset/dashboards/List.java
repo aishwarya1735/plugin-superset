@@ -8,19 +8,23 @@ import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
+import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.FileSerde;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.plugin.superset.SupersetConnection;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
+import reactor.core.publisher.Flux;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
 @SuperBuilder
 @ToString
@@ -29,7 +33,10 @@ import java.util.Map;
 @NoArgsConstructor
 @Schema(
     title = "List Superset dashboards",
-    description = "Retrieves a paginated list of dashboards configured in Apache Superset."
+    description = """
+        Retrieves dashboards configured in Apache Superset.
+        Pages through all results and returns them according to the selected `fetchType`.
+        """
 )
 @Plugin(
     examples = {
@@ -51,7 +58,7 @@ import java.util.Map;
 )
 public class List extends SupersetConnection implements RunnableTask<List.Output> {
 
-    @Schema(title = "How to return the output data (defaults to FETCH)")
+    @Schema(title = "How to return the output data: FETCH, FETCH_ONE, or STORE (defaults to FETCH)")
     @Builder.Default
     @PluginProperty(group = "main")
     private Property<FetchType> fetchType = Property.ofValue(FetchType.FETCH);
@@ -69,7 +76,6 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
         try (HttpClient client = createHttpClient(runContext)) {
             String token = login(client, runContext);
 
-            // Loop to handle full pagination (Reviewer Finding #4)
             while (hasMore) {
                 String queryParam = String.format("?q=(page:%d,page_size:%d)", page, pageSize);
                 HttpRequest listReq = HttpRequest.builder()
@@ -85,7 +91,9 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
                     hasMore = false;
                 } else {
                     allDashboards.addAll(response.getResult());
-                    if (response.getResult().size() < pageSize) {
+                    if (response.getCount() != null && allDashboards.size() >= response.getCount()) {
+                        hasMore = false;
+                    } else if (response.getResult().size() < pageSize) {
                         hasMore = false;
                     } else {
                         page++;
@@ -94,17 +102,36 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
             }
         }
 
-        return Output.builder()
-            .dashboards(allDashboards)
-            .size(allDashboards.size())
-            .build();
+        Output.OutputBuilder outputBuilder = Output.builder()
+            .size(allDashboards.size());
+
+        switch (fetchMode) {
+            case FETCH_ONE -> outputBuilder.dashboard(!allDashboards.isEmpty() ? allDashboards.getFirst() : null);
+            case FETCH -> outputBuilder.dashboards(allDashboards);
+            case STORE -> {
+                File tempFile = runContext.workingDir().createTempFile(".ion").toFile();
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                    FileSerde.writeAll(writer, Flux.fromIterable(allDashboards)).block();
+                }
+                URI storageUri = runContext.storage().put(tempFile.toURI());
+                outputBuilder.uri(storageUri);
+            }
+        }
+
+        return outputBuilder.build();
     }
 
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "The retrieved dashboards")
+        @Schema(title = "URI of stored dashboards in Kestra internal storage (when STORE)")
+        private URI uri;
+
+        @Schema(title = "The retrieved dashboards (when FETCH)")
         private java.util.List<DashboardItem> dashboards;
+
+        @Schema(title = "First retrieved dashboard (when FETCH_ONE)")
+        private DashboardItem dashboard;
 
         @Schema(title = "The total count of dashboards retrieved")
         private Integer size;
@@ -114,6 +141,7 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DashboardListResponse {
+        private Integer count;
         private java.util.List<DashboardItem> result;
     }
 
@@ -121,10 +149,15 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DashboardItem {
-        private Object id;
+        @Schema(title = "Dashboard ID")
+        private Integer id;
+
         @JsonProperty("dashboard_title")
+        @Schema(title = "Dashboard title")
         private String dashboardTitle;
+
         @JsonProperty("changed_on")
+        @Schema(title = "Last change timestamp")
         private String changedOn;
     }
 }
