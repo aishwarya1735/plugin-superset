@@ -87,8 +87,11 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
                 HttpResponse<String> listResp = client.request(listReq, String.class);
                 DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
 
-                if (response.getResult() == null || response.getResult().isEmpty()) {
-                    hasMore = false;
+                if (response.getCount() != null && allDashboards.size() >= response.getCount()) {
+                        hasMore = false;
+                } else {
+                        page++;
+                }
                 } else {
                     allDashboards.addAll(response.getResult());
                     if (response.getCount() != null && allDashboards.size() >= response.getCount()) {

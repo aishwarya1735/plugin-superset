@@ -2,7 +2,6 @@ package io.kestra.plugin.superset.charts;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.HttpResponse;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
@@ -23,6 +22,9 @@ import reactor.core.publisher.Flux;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,8 +38,8 @@ import java.util.Map;
 @Schema(
     title = "Fetch chart data",
     description = """
-        Queries chart data via POST /chart/data and outputs rows using FetchType.
-        Rows can be fetched in memory or stored as Amazon Ion in internal storage.
+        Queries chart data via `POST /chart/data` and outputs rows using `fetchType`.
+        Rows can be fetched in memory or streamed as Amazon Ion into internal storage.
         """
 )
 @Plugin(
@@ -70,52 +72,73 @@ import java.util.Map;
 )
 public class Data extends SupersetConnection implements RunnableTask<Data.Output> {
 
-    @Schema(title = "The JSON query payload to send to /chart/data")
+    @Schema(
+        title = "The JSON query payload to send to /chart/data",
+        description = """
+            Map representing the Superset chart query context (including `datasource` and `queries`)
+            submitted as JSON to `POST /api/v1/chart/data`.
+            """
+    )
     @NotNull
     @PluginProperty(group = "main")
     private Property<Map<String, Object>> chartPayload;
 
-    @Schema(title = "How to return output data: FETCH, FETCH_ONE, or STORE (defaults to STORE)")
+    @Schema(
+        title = "How to return output data",
+        description = """
+            Controls how chart rows are returned: `STORE` (written as Amazon Ion in internal storage, default),
+            `FETCH` (all rows in output), or `FETCH_ONE` (first row only).
+            """
+    )
     @Builder.Default
     @PluginProperty(group = "main")
     private Property<FetchType> fetchType = Property.ofValue(FetchType.STORE);
 
     @Override
     public Output run(RunContext runContext) throws Exception {
-        String baseUrl = getBaseUrl(runContext);
+        var rBaseUrl = getBaseUrl(runContext);
         var rPayload = runContext.render(this.chartPayload).asMap(String.class, Object.class);
-        FetchType fetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
+        if (rPayload.isEmpty()) {
+            throw new IllegalArgumentException("chartPayload is required");
+        }
+        var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
 
         List<Map<String, Object>> allRows = new ArrayList<>();
 
         try (HttpClient client = createHttpClient(runContext)) {
-            String token = login(client, runContext);
+            var token = login(client, runContext);
 
             HttpRequest dataReq = HttpRequest.builder()
-                .uri(URI.create(baseUrl + "/chart/data"))
+                .uri(URI.create(rBaseUrl + "/chart/data"))
                 .method("POST")
                 .addHeader("Authorization", "Bearer " + token)
                 .body(HttpRequest.JsonRequestBody.builder().content(rPayload).build())
                 .build();
 
-            HttpResponse<String> dataResp = client.request(dataReq, String.class);
-            ChartDataResponse response = JacksonMapper.ofJson().readValue(dataResp.getBody(), ChartDataResponse.class);
-
-            if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
-                throw new IllegalArgumentException("Superset /chart/data returned no result rows");
-            }
-
-            for (ChartResultItem item : response.getResult()) {
-                if (item.getData() != null) {
-                    allRows.addAll(item.getData());
+            client.request(dataReq, response -> {
+                try (InputStream bodyStream = response.getBody()) {
+                    if (bodyStream == null) {
+                        throw new IllegalStateException("Superset /chart/data returned an empty response body");
+                    }
+                    ChartDataResponse parsed = JacksonMapper.ofJson().readValue(bodyStream, ChartDataResponse.class);
+                    if (parsed == null || parsed.getResult() == null) {
+                        throw new IllegalStateException("Superset /chart/data returned no result array");
+                    }
+                    for (ChartResultItem item : parsed.getResult()) {
+                        if (item.getData() != null) {
+                            allRows.addAll(item.getData());
+                        }
+                    }
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
                 }
-            }
+            });
         }
 
         Output.OutputBuilder outputBuilder = Output.builder()
             .size(allRows.size());
 
-        switch (fetchMode) {
+        switch (rFetchMode) {
             case FETCH_ONE -> outputBuilder.row(!allRows.isEmpty() ? allRows.getFirst() : null);
             case FETCH -> outputBuilder.rows(allRows);
             case STORE -> {
@@ -125,6 +148,8 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
                 }
                 URI storageUri = runContext.storage().put(tempFile.toURI());
                 outputBuilder.uri(storageUri);
+            }
+            default -> {
             }
         }
 

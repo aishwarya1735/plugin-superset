@@ -18,6 +18,7 @@ import lombok.experimental.SuperBuilder;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @SuperBuilder
 @ToString
@@ -26,7 +27,10 @@ import java.util.List;
 @NoArgsConstructor
 @Schema(
     title = "Export Superset dashboards",
-    description = "Exports dashboards as a ZIP backup file saved to internal storage."
+    description = """
+        Exports one or more Apache Superset dashboards as a ZIP archive via `GET /dashboard/export/`
+        and stores the archive in Kestra internal storage.
+        """
 )
 @Plugin(
     examples = {
@@ -43,36 +47,39 @@ import java.util.List;
                     username: "{{ secret('SUPERSET_USER') }}"
                     password: "{{ secret('SUPERSET_PASSWORD') }}"
                     dashboardIds:
+                      - 1
+                      - 2
                 """
         )
     }
 )
 public class Export extends SupersetConnection implements RunnableTask<Export.Output> {
 
-    @Schema(title = "List of Dashboard IDs to export")
+    @Schema(
+        title = "List of Dashboard IDs to export",
+        description = """
+            Non-empty list of numeric Superset dashboard IDs to include in the exported ZIP bundle.
+            """
+    )
     @NotEmpty
     @PluginProperty(group = "main")
     private Property<List<Integer>> dashboardIds;
 
     @Override
     public Output run(RunContext runContext) throws Exception {
-        String baseUrl = getBaseUrl(runContext);
-        List<Integer> ids = runContext.render(this.dashboardIds).asList(Integer.class);
-
-        StringBuilder queryIds = new StringBuilder("?q=!([");
-        for (int i = 0; i < ids.size(); i++) {
-            queryIds.append(ids.get(i));
-            if (i < ids.size() - 1) {
-                queryIds.append(",");
-            }
+        var rBaseUrl = getBaseUrl(runContext);
+        var rIds = runContext.render(this.dashboardIds).asList(Integer.class);
+        if (rIds.isEmpty()) {
+            throw new IllegalArgumentException("dashboardIds must not be empty");
         }
-        queryIds.append("])");
+
+        var queryIds = "?q=" + rIds.stream().map(String::valueOf).collect(Collectors.joining(",", "!(", ")"));
 
         try (HttpClient client = createHttpClient(runContext)) {
-            String token = login(client, runContext);
+            var token = login(client, runContext);
 
             HttpRequest exportReq = HttpRequest.builder()
-                .uri(URI.create(baseUrl + "/dashboard/export/" + queryIds))
+                .uri(URI.create(rBaseUrl + "/dashboard/export/" + queryIds))
                 .method("GET")
                 .addHeader("Authorization", "Bearer " + token)
                 .build();

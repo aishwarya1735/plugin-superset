@@ -93,8 +93,11 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
                     allDatasets.addAll(response.getResult());
                     if (response.getCount() != null && allDatasets.size() >= response.getCount()) {
                         hasMore = false;
-                    } else if (response.getResult().size() < pageSize) {
+                    if (response.getCount() != null && allDashboards.size() >= response.getCount()) {
                         hasMore = false;
+                    } else {
+                        page++;
+                    }
                     } else {
                         page++;
                     }

@@ -1,16 +1,26 @@
-This is the Kestra plugin template. Use it as a starting point for building a new plugin.
+# Apache Superset
 
-## What this template ships
+Orchestrate Apache Superset business intelligence assets, dataset refreshes, chart queries, and dashboard exports.
 
-- `Example` is a sample `RunnableTask` that reverses an input string.
-- `Trigger` is a sample polling trigger that fires an execution at random.
+## Authentication
 
-## How to build your plugin
+All tasks authenticate against Apache Superset using JWT tokens obtained via `POST /api/v1/security/login`. 
+Write operations automatically request and supply an `X-CSRFToken` header.
 
-1. Rename the package `io.kestra.plugin.superset` to your own, for example `io.kestra.plugin.myservice`.
-2. Update `group`, `name`, `title`, and `description` in `src/main/resources/metadata/index.yaml`.
-3. Replace `src/main/resources/icons/plugin-icon.svg` with your service's icon.
-4. Replace the `Example` and `Trigger` classes with your real tasks and triggers.
-5. Replace this how-to with documentation for your plugin.
+Supply the following connection properties:
+- `url`: Superset base API URL (e.g. `https://superset.example.com/api/v1`).
+- `username`: Account username.
+- `password`: Account password (marked as a secret).
+- `provider`: Authentication provider (defaults to `db`).
 
-Run `./gradlew lintPluginDocs` before pushing to validate the plugin documentation.
+## Tasks
+
+- `io.kestra.plugin.superset.datasets.Refresh`: Refreshes dataset metadata and columns.
+- `io.kestra.plugin.superset.datasets.List`: Lists available datasets.
+- `io.kestra.plugin.superset.dashboards.List`: Lists dashboards with pagination.
+- `io.kestra.plugin.superset.dashboards.Export`: Exports dashboards as a `.zip` backup file to Kestra internal storage.
+- `io.kestra.plugin.superset.charts.Data`: Queries chart data and saves result rows to internal storage.
+
+## Triggers
+
+- `io.kestra.plugin.superset.dashboards.Trigger`: Polls Superset dashboards and triggers execution when dashboards are created or modified, using namespace Key-Value store watermarks.

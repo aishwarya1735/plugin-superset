@@ -18,6 +18,8 @@ import io.kestra.core.models.triggers.TriggerOutput;
 import io.kestra.core.models.triggers.TriggerService;
 import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.core.storages.kv.KVValueAndMetadata;
+import io.kestra.plugin.superset.SupersetConnection;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
@@ -25,8 +27,9 @@ import lombok.experimental.SuperBuilder;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @SuperBuilder
@@ -36,7 +39,10 @@ import java.util.Optional;
 @NoArgsConstructor
 @Schema(
     title = "Trigger flow on Superset dashboard change",
-    description = "Polls Superset dashboards and triggers execution when dashboards are modified or created."
+    description = """
+        Polls Apache Superset dashboards and triggers an execution when one or more dashboards
+        are created or modified since the persisted namespace KV Store watermark.
+        """
 )
 @Plugin(
     examples = {
@@ -63,27 +69,55 @@ import java.util.Optional;
 )
 public class Trigger extends AbstractTrigger implements PollingTriggerInterface, TriggerOutput<Trigger.Output> {
 
-    @Schema(title = "Interval between polling evaluations")
+    @Schema(
+        title = "Interval between polling evaluations",
+        description = """
+            Duration between two consecutive polls of the Superset dashboard endpoint (defaults to 5 minutes).
+            """
+    )
     @Builder.Default
+    @PluginProperty(group = "execution")
     private final Duration interval = Duration.ofMinutes(5);
 
-    @Schema(title = "The Superset API base URL", description = "Base URL of your Apache Superset instance (e.g. https://superset.example.com/api/v1)")
+    @Schema(
+        title = "The Superset API base URL",
+        description = """
+            Base URL of the Apache Superset API, including the `/api/v1` path suffix
+            (for example `https://superset.example.com/api/v1`).
+            """
+    )
     @NotNull
     @PluginProperty(group = "connection")
     protected Property<String> url;
 
-    @Schema(title = "The Superset username", description = "Username used to authenticate against Apache Superset")
+    @Schema(
+        title = "The Superset username",
+        description = """
+            Username used to authenticate against Apache Superset via `POST /security/login`.
+            """
+    )
     @NotNull
     @PluginProperty(group = "connection")
     protected Property<String> username;
 
-    @Schema(title = "The Superset password", description = "Password associated with the username")
+    @Schema(
+        title = "The Superset password",
+        description = """
+            Password associated with the Superset username. Always store this value in a Kestra secret.
+            """
+    )
     @NotNull
     @PluginProperty(group = "connection", secret = true)
     @ToString.Exclude
     protected Property<String> password;
 
-    @Schema(title = "Authentication provider", description = "Authentication provider, defaults to db")
+    @Schema(
+        title = "Authentication provider",
+        description = """
+            Superset authentication provider passed to `/security/login`.
+            Supported values include `db` (default), `ldap`, `oauth`, and `oid`.
+            """
+    )
     @Builder.Default
     @PluginProperty(group = "connection")
     protected Property<String> provider = Property.ofValue("db");
@@ -91,63 +125,70 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @Override
     public Optional<Execution> evaluate(ConditionContext conditionContext, TriggerContext context) throws Exception {
         RunContext runContext = conditionContext.getRunContext();
-
-        String rUrl = runContext.render(this.url).as(String.class).orElseThrow(() -> new IllegalArgumentException("url is required"));
-        if (rUrl.endsWith("/")) {
-            rUrl = rUrl.substring(0, rUrl.length() - 1);
-        }
-        String rUser = runContext.render(this.username).as(String.class).orElseThrow(() -> new IllegalArgumentException("username is required"));
-        String rPass = runContext.render(this.password).as(String.class).orElseThrow(() -> new IllegalArgumentException("password is required"));
-        String rProvider = runContext.render(this.provider).as(String.class).orElse("db");
+        var rBaseUrl = SupersetConnection.resolveBaseUrl(runContext, this.url);
 
         try (HttpClient client = HttpClient.builder().runContext(runContext).build()) {
-            HttpRequest loginReq = HttpRequest.builder()
-                .uri(URI.create(rUrl + "/security/login"))
-                .method("POST")
-                .body(HttpRequest.JsonRequestBody.builder().content(Map.of("username", rUser, "password", rPass, "provider", rProvider, "refresh", true)).build())
-                .build();
-
-            HttpResponse<String> loginResp = client.request(loginReq, String.class);
-            Map<String, Object> tokenMap = JacksonMapper.ofJson().readValue(loginResp.getBody(), JacksonMapper.ofJson().getTypeFactory().constructMapType(Map.class, String.class, Object.class));
-            String accessToken = (String) tokenMap.get("access_token");
+            var accessToken = SupersetConnection.authenticate(
+                client, runContext, rBaseUrl, this.username, this.password, this.provider
+            );
 
             HttpRequest listReq = HttpRequest.builder()
-                .uri(URI.create(rUrl + "/dashboard/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page_size:10)"))
+                .uri(URI.create(rBaseUrl + "/dashboard/?q=(order_column:changed_on,order_direction:desc,page_size:100)"))
                 .method("GET")
                 .addHeader("Authorization", "Bearer " + accessToken)
                 .build();
 
             HttpResponse<String> listResp = client.request(listReq, String.class);
-            DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
-
-            if (response.getResult() == null || response.getResult().isEmpty()) {
+            if (listResp.getBody() == null || listResp.getBody().isBlank()) {
                 return Optional.empty();
             }
 
-            DashboardItem latest = response.getResult().getFirst();
-            String dashboardId = String.valueOf(latest.getId());
-            String dashboardTitle = latest.getDashboardTitle();
-            String changedOn = latest.getChangedOn();
+            DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
+            if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
+                return Optional.empty();
+            }
 
-            String watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId() + "_" + this.getId().length() + "_" + this.getId();
+            var watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId()
+                + "_" + this.getId().length() + "_" + this.getId();
             var kvStore = runContext.namespaceKv(context.getNamespace());
-            var lastSeen = kvStore.getValue(watermarkKey);
+            Optional<String> lastSeen = kvStore.getValue(watermarkKey).map(v -> v.value().toString());
+
+            var maxChangedOn = response.getResult().stream()
+                .map(DashboardItem::getChangedOn)
+                .filter(Objects::nonNull)
+                .max(String::compareTo)
+                .orElse(null);
+
+            if (maxChangedOn == null) {
+                return Optional.empty();
+            }
 
             if (lastSeen.isEmpty()) {
-                kvStore.put(watermarkKey, new io.kestra.core.storages.kv.KVEntry(watermarkKey, changedOn));
+                kvStore.put(watermarkKey, new KVValueAndMetadata(null, maxChangedOn));
                 return Optional.empty();
             }
 
-            if (changedOn.equals(lastSeen.get().toString())) {
+            var previousWatermark = lastSeen.get();
+            List<DashboardItem> changedDashboards = new ArrayList<>();
+            for (DashboardItem item : response.getResult()) {
+                if (item.getChangedOn() != null && item.getChangedOn().compareTo(previousWatermark) > 0) {
+                    changedDashboards.add(item);
+                }
+            }
+
+            if (changedDashboards.isEmpty()) {
                 return Optional.empty();
             }
 
-            kvStore.put(watermarkKey, new io.kestra.core.storages.kv.KVEntry(watermarkKey, changedOn));
+            kvStore.put(watermarkKey, new KVValueAndMetadata(null, maxChangedOn));
 
+            DashboardItem latest = changedDashboards.getFirst();
             Output output = Output.builder()
-                .dashboardId(dashboardId)
-                .dashboardTitle(dashboardTitle)
-                .changedOn(changedOn)
+                .dashboardId(String.valueOf(latest.getId()))
+                .dashboardTitle(latest.getDashboardTitle())
+                .changedOn(latest.getChangedOn())
+                .dashboards(changedDashboards)
+                .count(changedDashboards.size())
                 .build();
 
             Execution execution = TriggerService.generateExecution(this, conditionContext, context, output);
@@ -158,14 +199,20 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "The modified dashboard ID")
+        @Schema(title = "The most recently modified dashboard ID")
         private String dashboardId;
 
-        @Schema(title = "The modified dashboard title")
+        @Schema(title = "The most recently modified dashboard title")
         private String dashboardTitle;
 
-        @Schema(title = "Timestamp of modification")
+        @Schema(title = "Timestamp of the latest modification")
         private String changedOn;
+
+        @Schema(title = "All dashboards modified since the last watermark")
+        private List<DashboardItem> dashboards;
+
+        @Schema(title = "Number of modified dashboards detected")
+        private Integer count;
     }
 
     @Getter
@@ -179,12 +226,15 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DashboardItem {
+        @Schema(title = "Dashboard ID")
         private Integer id;
 
         @JsonProperty("dashboard_title")
+        @Schema(title = "Dashboard title")
         private String dashboardTitle;
 
         @JsonProperty("changed_on")
+        @Schema(title = "Last modification timestamp")
         private String changedOn;
     }
 }

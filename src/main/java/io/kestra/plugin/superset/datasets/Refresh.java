@@ -55,17 +55,18 @@ public class Refresh extends SupersetConnection implements RunnableTask<VoidOutp
     @PluginProperty(group = "main")
     private Property<Integer> datasetId;
 
-    @Override
+   @Override
     public VoidOutput run(RunContext runContext) throws Exception {
-        Integer id = runContext.render(this.datasetId).as(Integer.class).orElseThrow();
-        String baseUrl = getBaseUrl(runContext);
+        var rId = runContext.render(this.datasetId).as(Integer.class)
+            .orElseThrow(() -> new IllegalArgumentException("datasetId is required"));
+        var rBaseUrl = getBaseUrl(runContext);
 
         try (HttpClient client = createHttpClient(runContext)) {
-            String token = login(client, runContext);
-            String csrf = fetchCsrfToken(client, runContext, token);
+            var token = login(client, runContext);
+            var csrf = fetchCsrfToken(client, runContext, token);
 
             HttpRequest refreshReq = HttpRequest.builder()
-                .uri(URI.create(baseUrl + "/dataset/" + id + "/refresh"))
+                .uri(URI.create(rBaseUrl + "/dataset/" + rId + "/refresh"))
                 .method("PUT")
                 .addHeader("Authorization", "Bearer " + token)
                 .addHeader("X-CSRFToken", csrf)
