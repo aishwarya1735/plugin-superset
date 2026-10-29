@@ -102,8 +102,7 @@ public abstract class SupersetConnection extends Task {
             .body(HttpRequest.JsonRequestBody.builder().content(Map.of(
                 "username", rUsername,
                 "password", rPassword,
-                "provider", rProvider,
-                "refresh", true
+                "provider", rProvider
             )).build())
             .build();
 

@@ -1,6 +1,7 @@
 package io.kestra.plugin.superset.charts;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
@@ -17,7 +18,6 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import reactor.core.publisher.Flux;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -29,6 +29,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @SuperBuilder
 @ToString
@@ -103,32 +104,29 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         }
         var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
 
-        List<Map<String, Object>> allRows = new ArrayList<>();
+        List<Map<String, Object>> fetchedRows = new ArrayList<>();
+        AtomicInteger rowCount = new AtomicInteger(0);
+        File tempFile = rFetchMode == FetchType.STORE ? runContext.workingDir().createTempFile(".ion").toFile() : null;
 
         try (HttpClient client = createHttpClient(runContext)) {
-            var token = login(client, runContext);
+            var rToken = login(client, runContext);
 
             HttpRequest dataReq = HttpRequest.builder()
                 .uri(URI.create(rBaseUrl + "/chart/data"))
                 .method("POST")
-                .addHeader("Authorization", "Bearer " + token)
+                .addHeader("Authorization", "Bearer " + rToken)
                 .body(HttpRequest.JsonRequestBody.builder().content(rPayload).build())
                 .build();
 
             client.request(dataReq, response -> {
-                try (InputStream bodyStream = response.getBody()) {
+                try (
+                    InputStream bodyStream = response.getBody();
+                    BufferedWriter writer = tempFile != null ? new BufferedWriter(new FileWriter(tempFile)) : null
+                ) {
                     if (bodyStream == null) {
                         throw new IllegalStateException("Superset /chart/data returned an empty response body");
                     }
-                    ChartDataResponse parsed = JacksonMapper.ofJson().readValue(bodyStream, ChartDataResponse.class);
-                    if (parsed == null || parsed.getResult() == null) {
-                        throw new IllegalStateException("Superset /chart/data returned no result array");
-                    }
-                    for (ChartResultItem item : parsed.getResult()) {
-                        if (item.getData() != null) {
-                            allRows.addAll(item.getData());
-                        }
-                    }
+                    streamChartRows(bodyStream, rFetchMode, writer, fetchedRows, rowCount);
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
@@ -136,17 +134,13 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         }
 
         Output.OutputBuilder outputBuilder = Output.builder()
-            .size(allRows.size());
+            .size(rowCount.get());
 
         switch (rFetchMode) {
-            case FETCH_ONE -> outputBuilder.row(!allRows.isEmpty() ? allRows.getFirst() : null);
-            case FETCH -> outputBuilder.rows(allRows);
+            case FETCH_ONE -> outputBuilder.row(!fetchedRows.isEmpty() ? fetchedRows.getFirst() : null);
+            case FETCH -> outputBuilder.rows(fetchedRows);
             case STORE -> {
-                File tempFile = runContext.workingDir().createTempFile(".ion").toFile();
-                try (BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                    FileSerde.writeAll(writer, Flux.fromIterable(allRows)).block();
-                }
-                URI storageUri = runContext.storage().put(tempFile.toURI());
+                URI storageUri = runContext.storage().putFile(tempFile);
                 outputBuilder.uri(storageUri);
             }
             default -> {
@@ -154,6 +148,51 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         }
 
         return outputBuilder.build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void streamChartRows(
+        InputStream bodyStream,
+        FetchType fetchMode,
+        BufferedWriter writer,
+        List<Map<String, Object>> fetchedRows,
+        AtomicInteger rowCount
+    ) throws IOException {
+        var mapper = JacksonMapper.ofJson();
+        boolean foundResult = false;
+        try (JsonParser parser = mapper.getFactory().createParser(bodyStream)) {
+            while (parser.nextToken() != null) {
+                if (parser.currentToken() == JsonToken.FIELD_NAME && "result".equals(parser.currentName())) {
+                    if (parser.nextToken() == JsonToken.START_ARRAY) {
+                        foundResult = true;
+                        while (parser.nextToken() != JsonToken.END_ARRAY && parser.currentToken() != null) {
+                            while (parser.nextToken() != JsonToken.END_OBJECT && parser.currentToken() != null) {
+                                if (parser.currentToken() == JsonToken.FIELD_NAME && "data".equals(parser.currentName())) {
+                                    if (parser.nextToken() == JsonToken.START_ARRAY) {
+                                        while (parser.nextToken() != JsonToken.END_ARRAY && parser.currentToken() != null) {
+                                            Map<String, Object> row = mapper.readValue(parser, Map.class);
+                                            rowCount.incrementAndGet();
+                                            if (fetchMode == FetchType.STORE && writer != null) {
+                                                FileSerde.write(writer, row);
+                                            } else if (fetchMode == FetchType.FETCH) {
+                                                fetchedRows.add(row);
+                                            } else if (fetchMode == FetchType.FETCH_ONE && fetchedRows.isEmpty()) {
+                                                fetchedRows.add(row);
+                                            }
+                                        }
+                                    }
+                                } else if (parser.currentToken().isStructStart()) {
+                                    parser.skipChildren();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!foundResult) {
+            throw new IllegalStateException("Superset /chart/data returned no result array");
+        }
     }
 
     @Builder
@@ -170,19 +209,5 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
 
         @Schema(title = "Total number of rows returned")
         private Integer size;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ChartDataResponse {
-        private List<ChartResultItem> result;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ChartResultItem {
-        private List<Map<String, Object>> data;
     }
 }

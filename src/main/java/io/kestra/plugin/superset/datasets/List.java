@@ -1,5 +1,6 @@
-package io.kestra.plugin.superset.datasets;
+package io.kestra.plugin.superset.dashboards;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
@@ -32,9 +33,9 @@ import java.util.ArrayList;
 @Getter
 @NoArgsConstructor
 @Schema(
-    title = "List Superset datasets",
+    title = "List Superset dashboards",
     description = """
-        Retrieves datasets configured in Apache Superset.
+        Retrieves dashboards configured in Apache Superset.
         Pages through all results and returns them according to the selected `fetchType`.
         """
 )
@@ -42,13 +43,13 @@ import java.util.ArrayList;
     examples = {
         @Example(
             full = true,
-            title = "List all datasets",
+            title = "List all dashboards",
             code = """
-                id: list_datasets
+                id: list_dashboards
                 namespace: company.team
                 tasks:
                   - id: list
-                    type: io.kestra.plugin.superset.datasets.List
+                    type: io.kestra.plugin.superset.dashboards.List
                     url: "{{ secret('SUPERSET_URL') }}"
                     username: "{{ secret('SUPERSET_USER') }}"
                     password: "{{ secret('SUPERSET_PASSWORD') }}"
@@ -58,46 +59,50 @@ import java.util.ArrayList;
 )
 public class List extends SupersetConnection implements RunnableTask<List.Output> {
 
-    @Schema(title = "How to return the output data: FETCH, FETCH_ONE, or STORE (defaults to FETCH)")
+    @Schema(
+        title = "How to return the output data",
+        description = """
+            Controls how dashboards are returned: `FETCH` (all items in output, default),
+            `FETCH_ONE` (first item only), or `STORE` (written as an Amazon Ion file in internal storage).
+            """
+    )
     @Builder.Default
     @PluginProperty(group = "main")
     private Property<FetchType> fetchType = Property.ofValue(FetchType.FETCH);
 
     @Override
     public Output run(RunContext runContext) throws Exception {
-        String baseUrl = getBaseUrl(runContext);
-        FetchType fetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.FETCH);
+        var rBaseUrl = getBaseUrl(runContext);
+        var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.FETCH);
 
-        java.util.List<DatasetItem> allDatasets = new ArrayList<>();
+        java.util.List<DashboardItem> allDashboards = new ArrayList<>();
         int page = 0;
         int pageSize = 100;
         boolean hasMore = true;
 
         try (HttpClient client = createHttpClient(runContext)) {
-            String token = login(client, runContext);
+            var rToken = login(client, runContext);
 
             while (hasMore) {
-                String queryParam = String.format("?q=(page:%d,page_size:%d)", page, pageSize);
+                var queryParam = String.format("?q=(page:%d,page_size:%d)", page, pageSize);
                 HttpRequest listReq = HttpRequest.builder()
-                    .uri(URI.create(baseUrl + "/dataset/" + queryParam))
+                    .uri(URI.create(rBaseUrl + "/dashboard/" + queryParam))
                     .method("GET")
-                    .addHeader("Authorization", "Bearer " + token)
+                    .addHeader("Authorization", "Bearer " + rToken)
                     .build();
 
                 HttpResponse<String> listResp = client.request(listReq, String.class);
-                DatasetListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DatasetListResponse.class);
+                if (listResp.getBody() == null || listResp.getBody().isBlank()) {
+                    throw new IllegalStateException("Superset /dashboard/ returned an empty response body");
+                }
 
-                if (response.getResult() == null || response.getResult().isEmpty()) {
+                DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
+                if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
                     hasMore = false;
                 } else {
-                    allDatasets.addAll(response.getResult());
-                    if (response.getCount() != null && allDatasets.size() >= response.getCount()) {
-                        hasMore = false;
+                    allDashboards.addAll(response.getResult());
                     if (response.getCount() != null && allDashboards.size() >= response.getCount()) {
                         hasMore = false;
-                    } else {
-                        page++;
-                    }
                     } else {
                         page++;
                     }
@@ -106,18 +111,20 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
         }
 
         Output.OutputBuilder outputBuilder = Output.builder()
-            .size(allDatasets.size());
+            .size(allDashboards.size());
 
-        switch (fetchMode) {
-            case FETCH_ONE -> outputBuilder.dataset(!allDatasets.isEmpty() ? allDatasets.getFirst() : null);
-            case FETCH -> outputBuilder.datasets(allDatasets);
+        switch (rFetchMode) {
+            case FETCH_ONE -> outputBuilder.dashboard(!allDashboards.isEmpty() ? allDashboards.getFirst() : null);
+            case FETCH -> outputBuilder.dashboards(allDashboards);
             case STORE -> {
                 File tempFile = runContext.workingDir().createTempFile(".ion").toFile();
                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                    FileSerde.writeAll(writer, Flux.fromIterable(allDatasets)).block();
+                    FileSerde.writeAll(writer, Flux.fromIterable(allDashboards)).block();
                 }
-                URI storageUri = runContext.storage().put(tempFile.toURI());
+                URI storageUri = runContext.storage().putFile(tempFile);
                 outputBuilder.uri(storageUri);
+            }
+            default -> {
             }
         }
 
@@ -127,40 +134,41 @@ public class List extends SupersetConnection implements RunnableTask<List.Output
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "URI of stored datasets in Kestra internal storage (when STORE)")
+        @Schema(title = "URI of stored dashboards in Kestra internal storage (when STORE)")
         private URI uri;
 
-        @Schema(title = "The retrieved datasets (when FETCH)")
-        private java.util.List<DatasetItem> datasets;
+        @Schema(title = "The retrieved dashboards (when FETCH)")
+        private java.util.List<DashboardItem> dashboards;
 
-        @Schema(title = "First retrieved dataset (when FETCH_ONE)")
-        private DatasetItem dataset;
+        @Schema(title = "First retrieved dashboard (when FETCH_ONE)")
+        private DashboardItem dashboard;
 
-        @Schema(title = "The total count of datasets retrieved")
+        @Schema(title = "The total count of dashboards retrieved")
         private Integer size;
     }
 
     @Getter
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class DatasetListResponse {
+    public static class DashboardListResponse {
         private Integer count;
-        private java.util.List<DatasetItem> result;
+        private java.util.List<DashboardItem> result;
     }
 
     @Getter
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class DatasetItem {
-        @Schema(title = "Dataset ID")
+    public static class DashboardItem {
+        @Schema(title = "Dashboard ID")
         private Integer id;
 
-        @JsonProperty("table_name")
-        @Schema(title = "Table name")
-        private String tableName;
+        @JsonProperty("dashboard_title")
+        @Schema(title = "Dashboard title")
+        private String dashboardTitle;
 
-        @JsonProperty("schema")
-        @Schema(title = "Schema name")
-        private String schema;
+        @JsonProperty("changed_on_utc")
+        @JsonAlias("changed_on")
+        @Schema(title = "Last change timestamp")
+        private String changedOn;
     }
 }

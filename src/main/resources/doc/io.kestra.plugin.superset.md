@@ -1,26 +1,26 @@
-# Apache Superset
+# How to use the Apache Superset plugin
 
-Orchestrate Apache Superset business intelligence assets, dataset refreshes, chart queries, and dashboard exports.
+Orchestrate Apache Superset chart queries, dataset metadata refreshes, dashboard backups, and modification triggers from Kestra flows.
 
 ## Authentication
 
-All tasks authenticate against Apache Superset using JWT tokens obtained via `POST /api/v1/security/login`. 
-Write operations automatically request and supply an `X-CSRFToken` header.
+Every task and trigger authenticates against the Apache Superset REST API via `POST /api/v1/security/login` to obtain a short-lived JWT access token, and automatically fetches an `X-CSRFToken` from `GET /api/v1/security/csrf_token/` for write requests.
 
-Supply the following connection properties:
-- `url`: Superset base API URL (e.g. `https://superset.example.com/api/v1`).
-- `username`: Account username.
-- `password`: Account password (marked as a secret).
-- `provider`: Authentication provider (defaults to `db`).
+Store credentials using [Kestra secrets](https://kestra.io/docs/concepts/secret) and share common connection properties across tasks with [plugin defaults](https://kestra.io/docs/concepts/plugin-defaults):
+
+- `url`: Superset API base URL including `/api/v1` (e.g. `https://superset.example.com/api/v1`).
+- `username`: Superset username.
+- `password`: Superset password.
+- `provider`: Authentication provider (`db`, `ldap`, `oauth`, or `oid`; defaults to `db`).
 
 ## Tasks
 
-- `io.kestra.plugin.superset.datasets.Refresh`: Refreshes dataset metadata and columns.
-- `io.kestra.plugin.superset.datasets.List`: Lists available datasets.
-- `io.kestra.plugin.superset.dashboards.List`: Lists dashboards with pagination.
-- `io.kestra.plugin.superset.dashboards.Export`: Exports dashboards as a `.zip` backup file to Kestra internal storage.
-- `io.kestra.plugin.superset.charts.Data`: Queries chart data and saves result rows to internal storage.
+- `io.kestra.plugin.superset.charts.Data`: Executes a chart query (`chartPayload` required) via `POST /chart/data` and outputs or stores the resulting rows (`fetchType`).
+- `io.kestra.plugin.superset.dashboards.List`: Pages through all dashboards via `GET /dashboard/` (`fetchType` optional).
+- `io.kestra.plugin.superset.dashboards.Export`: Exports the specified dashboards (`dashboardIds` required) as a `.zip` archive to internal storage via `GET /dashboard/export/`.
+- `io.kestra.plugin.superset.datasets.List`: Pages through all datasets via `GET /dataset/` (`fetchType` optional).
+- `io.kestra.plugin.superset.datasets.Refresh`: Refreshes column metadata for a dataset (`datasetId` required) via `PUT /dataset/{id}/refresh`.
 
 ## Triggers
 
-- `io.kestra.plugin.superset.dashboards.Trigger`: Polls Superset dashboards and triggers execution when dashboards are created or modified, using namespace Key-Value store watermarks.
+- `io.kestra.plugin.superset.dashboards.Trigger`: Polls `GET /dashboard/` at a configurable `interval` and fires when dashboards are created or modified since the watermark persisted in the namespace KV Store.

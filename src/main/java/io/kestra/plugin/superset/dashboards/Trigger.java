@@ -1,5 +1,6 @@
 package io.kestra.plugin.superset.dashboards;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
@@ -29,7 +30,6 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 @SuperBuilder
@@ -62,7 +62,7 @@ import java.util.Optional;
                 tasks:
                   - id: handle_event
                     type: io.kestra.plugin.core.log.Log
-                    message: "Event received: {{ trigger.dashboardTitle }}"
+                    message: "Event received: {{ trigger.dashboards[0].dashboardTitle }}"
                 """
         )
     }
@@ -128,51 +128,58 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         var rBaseUrl = SupersetConnection.resolveBaseUrl(runContext, this.url);
 
         try (HttpClient client = HttpClient.builder().runContext(runContext).build()) {
-            var accessToken = SupersetConnection.authenticate(
+            var rAccessToken = SupersetConnection.authenticate(
                 client, runContext, rBaseUrl, this.username, this.password, this.provider
             );
-
-            HttpRequest listReq = HttpRequest.builder()
-                .uri(URI.create(rBaseUrl + "/dashboard/?q=(order_column:changed_on,order_direction:desc,page_size:100)"))
-                .method("GET")
-                .addHeader("Authorization", "Bearer " + accessToken)
-                .build();
-
-            HttpResponse<String> listResp = client.request(listReq, String.class);
-            if (listResp.getBody() == null || listResp.getBody().isBlank()) {
-                return Optional.empty();
-            }
-
-            DashboardListResponse response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
-            if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
-                return Optional.empty();
-            }
 
             var watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId()
                 + "_" + this.getId().length() + "_" + this.getId();
             var kvStore = runContext.namespaceKv(context.getNamespace());
             Optional<String> lastSeen = kvStore.getValue(watermarkKey).map(v -> v.value().toString());
 
-            var maxChangedOn = response.getResult().stream()
-                .map(DashboardItem::getChangedOn)
-                .filter(Objects::nonNull)
-                .max(String::compareTo)
-                .orElse(null);
-
-            if (maxChangedOn == null) {
-                return Optional.empty();
-            }
-
             if (lastSeen.isEmpty()) {
-                kvStore.put(watermarkKey, new KVValueAndMetadata(null, maxChangedOn));
+                DashboardListResponse firstPage = fetchDashboardPage(client, rBaseUrl, rAccessToken, 0, 1);
+                if (firstPage == null || firstPage.getResult() == null || firstPage.getResult().isEmpty()) {
+                    return Optional.empty();
+                }
+                var initialWatermark = firstPage.getResult().getFirst().getChangedOn();
+                if (initialWatermark != null) {
+                    kvStore.put(watermarkKey, new KVValueAndMetadata(null, initialWatermark));
+                }
                 return Optional.empty();
             }
 
             var previousWatermark = lastSeen.get();
+            String maxChangedOn = previousWatermark;
             List<DashboardItem> changedDashboards = new ArrayList<>();
-            for (DashboardItem item : response.getResult()) {
-                if (item.getChangedOn() != null && item.getChangedOn().compareTo(previousWatermark) > 0) {
-                    changedDashboards.add(item);
+            int page = 0;
+            int pageSize = 100;
+            boolean hasMore = true;
+
+            while (hasMore) {
+                DashboardListResponse response = fetchDashboardPage(client, rBaseUrl, rAccessToken, page, pageSize);
+                if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
+                    break;
+                }
+
+                for (DashboardItem item : response.getResult()) {
+                    if (item.getChangedOn() != null && item.getChangedOn().compareTo(previousWatermark) > 0) {
+                        changedDashboards.add(item);
+                        if (item.getChangedOn().compareTo(maxChangedOn) > 0) {
+                            maxChangedOn = item.getChangedOn();
+                        }
+                    } else {
+                        hasMore = false;
+                        break;
+                    }
+                }
+
+                if (hasMore) {
+                    if (response.getCount() != null && (page + 1) * pageSize >= response.getCount()) {
+                        hasMore = false;
+                    } else {
+                        page++;
+                    }
                 }
             }
 
@@ -182,11 +189,7 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
 
             kvStore.put(watermarkKey, new KVValueAndMetadata(null, maxChangedOn));
 
-            DashboardItem latest = changedDashboards.getFirst();
             Output output = Output.builder()
-                .dashboardId(String.valueOf(latest.getId()))
-                .dashboardTitle(latest.getDashboardTitle())
-                .changedOn(latest.getChangedOn())
                 .dashboards(changedDashboards)
                 .count(changedDashboards.size())
                 .build();
@@ -196,18 +199,30 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         }
     }
 
+    private DashboardListResponse fetchDashboardPage(
+        HttpClient client,
+        String baseUrl,
+        String accessToken,
+        int page,
+        int pageSize
+    ) throws Exception {
+        var query = String.format("?q=(order_column:changed_on,order_direction:desc,page:%d,page_size:%d)", page, pageSize);
+        HttpRequest listReq = HttpRequest.builder()
+            .uri(URI.create(baseUrl + "/dashboard/" + query))
+            .method("GET")
+            .addHeader("Authorization", "Bearer " + accessToken)
+            .build();
+
+        HttpResponse<String> listResp = client.request(listReq, String.class);
+        if (listResp.getBody() == null || listResp.getBody().isBlank()) {
+            return null;
+        }
+        return JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
+    }
+
     @Builder
     @Getter
     public static class Output implements io.kestra.core.models.tasks.Output {
-        @Schema(title = "The most recently modified dashboard ID")
-        private String dashboardId;
-
-        @Schema(title = "The most recently modified dashboard title")
-        private String dashboardTitle;
-
-        @Schema(title = "Timestamp of the latest modification")
-        private String changedOn;
-
         @Schema(title = "All dashboards modified since the last watermark")
         private List<DashboardItem> dashboards;
 
@@ -219,6 +234,7 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DashboardListResponse {
+        private Integer count;
         private List<DashboardItem> result;
     }
 
@@ -233,8 +249,9 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         @Schema(title = "Dashboard title")
         private String dashboardTitle;
 
-        @JsonProperty("changed_on")
-        @Schema(title = "Last modification timestamp")
+        @JsonProperty("changed_on_utc")
+        @JsonAlias("changed_on")
+        @Schema(title = "Last modification UTC timestamp")
         private String changedOn;
     }
 }

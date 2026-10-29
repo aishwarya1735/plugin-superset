@@ -1,8 +1,8 @@
 group: io.kestra.plugin.superset
 name: "superset"
 title: "Apache Superset"
-description: "Apache Superset plugin for Kestra"
-body: ""
+description: "Tasks and triggers that query chart data, refresh datasets, and export dashboards in Apache Superset."
+body: "Connects Kestra flows to Apache Superset via its REST API, handling JWT authentication and CSRF tokens automatically."
 videos: []
 createdBy: "Kestra Core Team"
 managedBy: "Kestra Core Team"

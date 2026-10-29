@@ -1,3 +1,8 @@
-title: Superset dashboards
-description: Manage, list, export, and monitor Apache Superset dashboards.
-category: DATA
+group: io.kestra.plugin.superset.dashboards
+name: "dashboards"
+title: "Superset dashboards"
+description: "Tasks and triggers that list, export, and monitor Apache Superset dashboards."
+body: "Lists dashboards, exports dashboard bundles as ZIP archives, and polls for dashboard modifications."
+videos: []
+createdBy: "Kestra Core Team"
+managedBy: "Kestra Core Team"

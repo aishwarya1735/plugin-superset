@@ -1,3 +1,8 @@
-title: Superset dashboards
-description: Manage, list, export, and monitor Apache Superset dashboards.
-category: DATA
+group: io.kestra.plugin.superset.datasets
+name: "datasets"
+title: "Superset datasets"
+description: "Tasks that list and refresh dataset column metadata in Apache Superset."
+body: "Lists configured datasets and refreshes dataset column metadata after upstream pipeline runs."
+videos: []
+createdBy: "Kestra Core Team"
+managedBy: "Kestra Core Team"

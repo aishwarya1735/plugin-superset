@@ -1,3 +1,8 @@
-title: Superset charts
-description: Query and retrieve chart data from Apache Superset.
-category: DATA
+group: io.kestra.plugin.superset.charts
+name: "charts"
+title: "Superset charts"
+description: "Tasks that query and stream chart data from Apache Superset."
+body: "Executes chart data queries via POST /api/v1/chart/data and returns or stores the resulting rows."
+videos: []
+createdBy: "Kestra Core Team"
+managedBy: "Kestra Core Team"

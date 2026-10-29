@@ -76,20 +76,25 @@ public class Export extends SupersetConnection implements RunnableTask<Export.Ou
         var queryIds = "?q=" + rIds.stream().map(String::valueOf).collect(Collectors.joining(",", "!(", ")"));
 
         try (HttpClient client = createHttpClient(runContext)) {
-            var token = login(client, runContext);
+            var rToken = login(client, runContext);
 
             HttpRequest exportReq = HttpRequest.builder()
                 .uri(URI.create(rBaseUrl + "/dashboard/export/" + queryIds))
                 .method("GET")
-                .addHeader("Authorization", "Bearer " + token)
+                .addHeader("Authorization", "Bearer " + rToken)
                 .build();
 
             HttpResponse<InputStream> exportResp = client.request(exportReq, InputStream.class);
-            URI storageUri = runContext.storage().put(URI.create("superset-dashboards-export.zip"), exportResp.getBody());
+            if (exportResp.getBody() == null) {
+                throw new IllegalStateException("Superset /dashboard/export/ returned an empty response stream");
+            }
 
-            return Output.builder()
-                .uri(storageUri)
-                .build();
+            try (InputStream bodyStream = exportResp.getBody()) {
+                URI storageUri = runContext.storage().putFile(bodyStream, "superset-dashboards-export.zip");
+                return Output.builder()
+                    .uri(storageUri)
+                    .build();
+            }
         }
     }
 

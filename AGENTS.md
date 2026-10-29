@@ -1,47 +1,15 @@
 # Kestra Apache Superset Plugin
 
-## What
+Integration plugin (`io.kestra.plugin.superset`) connecting Kestra flows to Apache Superset via its `/api/v1` REST API.
 
-- Provides plugin components under `io.kestra.plugin.superset`.
-- Includes classes such as `Example`, `Trigger`.
+## Subpackages, Tasks & Triggers
 
-## Why
-
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
-
-## How
-
-### Architecture
-
-Single-module plugin. Source packages under `io.kestra.plugin`:
-
-- `superset`
-
-Infrastructure dependencies (Docker Compose services):
-
-- `app`
-
-### Key Plugin Classes
-
-- `io.kestra.plugin.superset.Example`
-
-### Project Structure
-
-```
-plugin-superset/
-├── src/main/java/io/kestra/plugin/superset/
-├── src/test/java/io/kestra/plugin/superset/
-├── build.gradle
-└── README.md
-```
-
-## Local rules
-
-- Base the wording on the implemented packages and classes, not on template README text.
-
-## References
-
-- https://kestra.io/docs/plugin-developer-guide
-- https://kestra.io/docs/plugin-developer-guide/contribution-guidelines
+- `io.kestra.plugin.superset.charts`
+  - `Data`: Runs `POST /chart/data` and streams or returns result rows via `fetchType`.
+- `io.kestra.plugin.superset.dashboards`
+  - `List`: Pages through `GET /dashboard/` and outputs typed `DashboardItem` records.
+  - `Export`: Exports dashboards via `GET /dashboard/export/` as a ZIP file in internal storage.
+  - `Trigger`: Polls `GET /dashboard/` ordered by `changed_on` and persists watermarks in the namespace KV Store.
+- `io.kestra.plugin.superset.datasets`
+  - `List`: Pages through `GET /dataset/` and outputs typed `DatasetItem` records.
+  - `Refresh`: Refreshes dataset column metadata via `PUT /dataset/{id}/refresh` using JWT + CSRF authentication.
