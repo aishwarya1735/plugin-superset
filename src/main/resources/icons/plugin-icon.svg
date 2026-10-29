@@ -1,4 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
-  <path fill="#20A7C9" d="M50 5C25.15 5 5 25.15 5 50s20.15 45 45 45 45-20.15 45-45S74.85 5 50 5zm0 14c17.12 0 31 13.88 31 31S67.12 81 50 81 19 67.12 19 50s13.88-31 31-31z"/>
-  <path fill="currentColor" d="M35 65h10V45H35v20zm20 0h10V35H55v30z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60" width="120" height="60">
+  <g fill="none" stroke-width="10" stroke-linecap="round">
+    <!-- Left Loop & Diagonal (Teal Segment) -->
+    <path stroke="#20A7C9" d="M 40 12 A 18 18 0 1 0 40 48 C 52 48 58 12 70 12" />
+    <!-- Right Loop (Adaptive Theme Segment) -->
+    <path stroke="currentColor" d="M 70 12 A 18 18 0 1 1 70 48 C 58 48 52 12 40 12" />
+  </g>
 </svg>
