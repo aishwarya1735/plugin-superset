@@ -60,7 +60,7 @@ import java.util.Optional;
                 tasks:
                   - id: handle_event
                     type: io.kestra.plugin.core.log.Log
-                    message: "Event received: {{ trigger.dashboards[0].dashboardTitle }}"
+                    message: "Event received: {{ trigger.dashboards[0].dashboard_title }}"
                 """
         )
     }
