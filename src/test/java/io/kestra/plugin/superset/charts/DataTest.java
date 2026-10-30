@@ -1,11 +1,10 @@
-package io.kestra.plugin.superset.datasets;
+package io.kestra.plugin.superset.charts;
 
 import com.sun.net.httpserver.HttpServer;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.models.property.Property;
+import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContextFactory;
-import io.kestra.core.utils.TestsUtils;
-import io.kestra.plugin.superset.dashboards.Trigger;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,19 +13,18 @@ import org.junit.jupiter.api.Test;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @KestraTest
-class TriggerTest {
+class DataTest {
 
     @Inject
     private RunContextFactory runContextFactory;
 
     private HttpServer server;
     private String baseUrl;
-    private final AtomicReference<String> changedOnRef = new AtomicReference<>("2026-01-01T00:00:00Z");
 
     @BeforeEach
     void setUp() throws Exception {
@@ -39,9 +37,8 @@ class TriggerTest {
                 os.write(body);
             }
         });
-        server.createContext("/api/v1/dashboard/", exchange -> {
-            var json = "{\"count\":1,\"result\":[{\"id\":1,\"dashboard_title\":\"Exec\",\"changed_on_utc\":\"" + changedOnRef.get() + "\"}]}";
-            var body = json.getBytes(StandardCharsets.UTF_8);
+        server.createContext("/api/v1/chart/data", exchange -> {
+            var body = "{\"result\":[{\"data\":[{\"metric\":42}]}]}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
             try (var os = exchange.getResponseBody()) {
@@ -60,21 +57,18 @@ class TriggerTest {
     }
 
     @Test
-    void testTriggerEvaluateSuccessfully() throws Exception {
-        var trigger = Trigger.builder()
-            .id("watch")
-            .type(Trigger.class.getName())
+    void testChartDataRunSuccessfully() throws Exception {
+        var runContext = runContextFactory.of();
+
+        var chartData = Data.builder()
             .url(Property.ofValue(baseUrl))
             .username(Property.ofValue("admin"))
             .password(Property.ofValue("admin"))
+            .chartPayload(Property.ofValue(Map.of("queries", java.util.List.of(Map.of("row_limit", 10)))))
+            .fetchType(Property.ofValue(FetchType.STORE))
             .build();
-        var mocked = TestsUtils.mockTrigger(runContextFactory, trigger);
-
-        var firstEval = trigger.evaluate(mocked.getKey(), mocked.getValue());
-        assertTrue(firstEval.isEmpty());
-
-        changedOnRef.set("2026-01-02T00:00:00Z");
-        var secondEval = trigger.evaluate(mocked.getKey(), mocked.getValue());
-        assertTrue(secondEval.isPresent());
+        var chartOut = chartData.run(runContext);
+        assertEquals(1, chartOut.getSize());
+        assertNotNull(chartOut.getUri());
     }
 }

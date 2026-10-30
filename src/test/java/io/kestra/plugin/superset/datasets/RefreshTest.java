@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,12 +24,13 @@ class RefreshTest {
 
     private HttpServer server;
     private String baseUrl;
+    private final AtomicReference<String> loginBody = new AtomicReference<>("{\"access_token\":\"test-jwt-token\"}");
 
     @BeforeEach
     void setUp() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/security/login", exchange -> {
-            var body = "{\"access_token\":\"test-jwt-token\"}".getBytes(StandardCharsets.UTF_8);
+            var body = loginBody.get().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
             try (var os = exchange.getResponseBody()) {
@@ -73,5 +75,20 @@ class RefreshTest {
             .datasetId(Property.ofValue(12))
             .build();
         assertNull(refresh.run(runContext));
+    }
+
+    @Test
+    void testLoginFailureThrowsActionableException() {
+        loginBody.set("{}");
+        var runContext = runContextFactory.of();
+
+        var refresh = Refresh.builder()
+            .url(Property.ofValue(baseUrl))
+            .username(Property.ofValue("admin"))
+            .password(Property.ofValue("wrong"))
+            .datasetId(Property.ofValue(12))
+            .build();
+
+        assertThrows(IllegalStateException.class, () -> refresh.run(runContext));
     }
 }

@@ -1,10 +1,9 @@
-package io.kestra.plugin.superset.datasets;
+package io.kestra.plugin.superset.dashboards;
 
 import com.sun.net.httpserver.HttpServer;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.runners.RunContextFactory;
-import io.kestra.plugin.superset.dashboards.Export;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

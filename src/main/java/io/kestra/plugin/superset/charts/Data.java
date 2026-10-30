@@ -1,6 +1,5 @@
 package io.kestra.plugin.superset.charts;
 
-import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.models.annotations.Example;
@@ -103,7 +102,7 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         }
         var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
 
-        java.util.List<Map<String, Object>> fetchedRows = new ArrayList<>();
+        var fetchedRows = new ArrayList<Map<String, Object>>();
         var rowCount = new AtomicInteger(0);
         var tempFile = rFetchMode == FetchType.STORE ? runContext.workingDir().createTempFile(".ion").toFile() : null;
 
@@ -156,7 +155,7 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         InputStream bodyStream,
         FetchType fetchMode,
         OutputStream output,
-        java.util.List<Map<String, Object>> fetchedRows,
+        List<Map<String, Object>> fetchedRows,
         AtomicInteger rowCount
     ) throws IOException {
         var mapper = JacksonMapper.ofJson();
@@ -203,26 +202,12 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         private URI uri;
 
         @Schema(title = "All fetched rows (when FETCH)")
-        private java.util.List<Map<String, Object>> rows;
+        private List<Map<String, Object>> rows;
 
         @Schema(title = "First fetched row (when FETCH_ONE)")
         private Map<String, Object> row;
 
         @Schema(title = "Total number of rows returned")
         private Integer size;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ChartDataResponse {
-        private java.util.List<ChartResultItem> result;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class ChartResultItem {
-        private java.util.List<Map<String, Object>> data;
     }
 }

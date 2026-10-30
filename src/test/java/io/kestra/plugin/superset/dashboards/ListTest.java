@@ -1,11 +1,10 @@
-package io.kestra.plugin.superset.datasets;
+package io.kestra.plugin.superset.dashboards;
 
 import com.sun.net.httpserver.HttpServer;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContextFactory;
-import io.kestra.plugin.superset.charts.Data;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,12 +13,11 @@ import org.junit.jupiter.api.Test;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @KestraTest
-class DataTest {
+class ListTest {
 
     @Inject
     private RunContextFactory runContextFactory;
@@ -38,8 +36,8 @@ class DataTest {
                 os.write(body);
             }
         });
-        server.createContext("/api/v1/chart/data", exchange -> {
-            var body = "{\"result\":[{\"data\":[{\"metric\":42}]}]}".getBytes(StandardCharsets.UTF_8);
+        server.createContext("/api/v1/dashboard/", exchange -> {
+            var body = "{\"count\":1,\"result\":[{\"id\":1,\"dashboard_title\":\"Exec\"}]}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
             try (var os = exchange.getResponseBody()) {
@@ -58,18 +56,17 @@ class DataTest {
     }
 
     @Test
-    void testChartDataRunSuccessfully() throws Exception {
+    void testDashboardListRunSuccessfully() throws Exception {
         var runContext = runContextFactory.of();
 
-        var chartData = Data.builder()
+        var dashboardList = List.builder()
             .url(Property.ofValue(baseUrl))
             .username(Property.ofValue("admin"))
             .password(Property.ofValue("admin"))
-            .chartPayload(Property.ofValue(Map.of("queries", java.util.List.of(Map.of("row_limit", 10)))))
-            .fetchType(Property.ofValue(FetchType.STORE))
+            .fetchType(Property.ofValue(FetchType.FETCH_ONE))
             .build();
-        var chartOut = chartData.run(runContext);
-        assertEquals(1, chartOut.getSize());
-        assertNotNull(chartOut.getUri());
+        var dashboardOut = dashboardList.run(runContext);
+        assertEquals(1, dashboardOut.getSize());
+        assertEquals("Exec", dashboardOut.getDashboard().getDashboardTitle());
     }
 }
