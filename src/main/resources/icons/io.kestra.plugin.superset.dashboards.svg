@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60" width="120" height="60">
-  <g fill="none" stroke-width="10" stroke-linecap="round">
-    <!-- Left Loop & Diagonal (Teal Segment) -->
-    <path stroke="#20A7C9" d="M 40 12 A 18 18 0 1 0 40 48 C 52 48 58 12 70 12" />
-    <!-- Right Loop (Adaptive Theme Segment) -->
-    <path stroke="currentColor" d="M 70 12 A 18 18 0 1 1 70 48 C 58 48 52 12 40 12" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" width="120" height="60">
+  <g fill="none" stroke-width="80" stroke-linecap="round">
+    <!-- Left Loop (Official Apache Superset Teal #20A7C9) -->
+    <path stroke="#20A7C9" d="M 333 100 A 150 150 0 1 0 333 400 C 433 400 483 100 583 100" />
+    <!-- Right Loop (Official Adaptive currentColor Segment) -->
+    <path stroke="currentColor" d="M 583 100 A 150 150 0 1 1 583 400 C 483 400 433 100 333 100" />
   </g>
 </svg>

@@ -103,7 +103,7 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         }
         var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.STORE);
 
-        List<Map<String, Object>> fetchedRows = new ArrayList<>();
+        java.util.List<Map<String, Object>> fetchedRows = new ArrayList<>();
         var rowCount = new AtomicInteger(0);
         var tempFile = rFetchMode == FetchType.STORE ? runContext.workingDir().createTempFile(".ion").toFile() : null;
 
@@ -119,8 +119,8 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
 
             client.request(dataReq, response -> {
                 try (
-                    InputStream bodyStream = response.getBody();
-                    OutputStream output = tempFile != null
+                    var bodyStream = response.getBody();
+                    var output = tempFile != null
                         ? new BufferedOutputStream(new FileOutputStream(tempFile), FileSerde.BUFFER_SIZE)
                         : null
                 ) {
@@ -156,12 +156,12 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         InputStream bodyStream,
         FetchType fetchMode,
         OutputStream output,
-        List<Map<String, Object>> fetchedRows,
+        java.util.List<Map<String, Object>> fetchedRows,
         AtomicInteger rowCount
     ) throws IOException {
         var mapper = JacksonMapper.ofJson();
         var foundResult = false;
-        try (JsonParser parser = mapper.getFactory().createParser(bodyStream)) {
+        try (var parser = mapper.getFactory().createParser(bodyStream)) {
             while (parser.nextToken() != null) {
                 if (parser.currentToken() == JsonToken.FIELD_NAME && "result".equals(parser.currentName())) {
                     if (parser.nextToken() == JsonToken.START_ARRAY) {
@@ -171,7 +171,7 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
                                 if (parser.currentToken() == JsonToken.FIELD_NAME && "data".equals(parser.currentName())) {
                                     if (parser.nextToken() == JsonToken.START_ARRAY) {
                                         while (parser.nextToken() != JsonToken.END_ARRAY && parser.currentToken() != null) {
-                                            Map<String, Object> row = mapper.readValue(parser, Map.class);
+                                            var row = (Map<String, Object>) mapper.readValue(parser, Map.class);
                                             rowCount.incrementAndGet();
                                             if (fetchMode == FetchType.STORE && output != null) {
                                                 FileSerde.write(output, row);
@@ -203,12 +203,26 @@ public class Data extends SupersetConnection implements RunnableTask<Data.Output
         private URI uri;
 
         @Schema(title = "All fetched rows (when FETCH)")
-        private List<Map<String, Object>> rows;
+        private java.util.List<Map<String, Object>> rows;
 
         @Schema(title = "First fetched row (when FETCH_ONE)")
         private Map<String, Object> row;
 
         @Schema(title = "Total number of rows returned")
         private Integer size;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ChartDataResponse {
+        private java.util.List<ChartResultItem> result;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ChartResultItem {
+        private java.util.List<Map<String, Object>> data;
     }
 }
