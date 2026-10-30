@@ -3,7 +3,6 @@ package io.kestra.plugin.superset;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.HttpResponse;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.property.Property;
@@ -96,7 +95,7 @@ public abstract class SupersetConnection extends Task {
             .orElseThrow(() -> new IllegalArgumentException("password is required"));
         var rProvider = runContext.render(providerProp).as(String.class).orElse("db");
 
-        HttpRequest loginReq = HttpRequest.builder()
+        var loginReq = HttpRequest.builder()
             .uri(URI.create(baseUrl + "/security/login"))
             .method("POST")
             .body(HttpRequest.JsonRequestBody.builder().content(Map.of(
@@ -106,12 +105,12 @@ public abstract class SupersetConnection extends Task {
             )).build())
             .build();
 
-        HttpResponse<String> loginResp = client.request(loginReq, String.class);
+        var loginResp = client.request(loginReq, String.class);
         if (loginResp.getBody() == null || loginResp.getBody().isBlank()) {
             throw new IllegalStateException("Superset login returned an empty response body, check url and credentials");
         }
 
-        LoginResponse response = JacksonMapper.ofJson().readValue(loginResp.getBody(), LoginResponse.class);
+        var response = JacksonMapper.ofJson().readValue(loginResp.getBody(), LoginResponse.class);
         if (response == null || response.getAccessToken() == null || response.getAccessToken().isBlank()) {
             throw new IllegalStateException("Superset login returned no access_token, check username, password and provider");
         }
@@ -125,18 +124,18 @@ public abstract class SupersetConnection extends Task {
 
     protected String fetchCsrfToken(HttpClient client, RunContext runContext, String accessToken) throws Exception {
         var rBaseUrl = getBaseUrl(runContext);
-        HttpRequest csrfReq = HttpRequest.builder()
+        var csrfReq = HttpRequest.builder()
             .uri(URI.create(rBaseUrl + "/security/csrf_token/"))
             .method("GET")
             .addHeader("Authorization", "Bearer " + accessToken)
             .build();
 
-        HttpResponse<String> csrfResp = client.request(csrfReq, String.class);
+        var csrfResp = client.request(csrfReq, String.class);
         if (csrfResp.getBody() == null || csrfResp.getBody().isBlank()) {
             throw new IllegalStateException("Superset CSRF endpoint returned an empty response body");
         }
 
-        CsrfResponse response = JacksonMapper.ofJson().readValue(csrfResp.getBody(), CsrfResponse.class);
+        var response = JacksonMapper.ofJson().readValue(csrfResp.getBody(), CsrfResponse.class);
         if (response == null || response.getResult() == null || response.getResult().isBlank()) {
             throw new IllegalStateException("Superset CSRF endpoint returned no token in result field");
         }

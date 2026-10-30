@@ -1,8 +1,6 @@
 package io.kestra.plugin.superset.dashboards;
 
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.HttpResponse;
-import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
@@ -15,9 +13,11 @@ import jakarta.validation.constraints.NotEmpty;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
 
-import java.io.InputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 @SuperBuilder
@@ -74,28 +74,32 @@ public class Export extends SupersetConnection implements RunnableTask<Export.Ou
         }
 
         var queryIds = "?q=" + rIds.stream().map(String::valueOf).collect(Collectors.joining(",", "!(", ")"));
+        var rUri = new AtomicReference<URI>();
 
-        try (HttpClient client = createHttpClient(runContext)) {
+        try (var client = createHttpClient(runContext)) {
             var rToken = login(client, runContext);
 
-            HttpRequest exportReq = HttpRequest.builder()
+            var exportReq = HttpRequest.builder()
                 .uri(URI.create(rBaseUrl + "/dashboard/export/" + queryIds))
                 .method("GET")
                 .addHeader("Authorization", "Bearer " + rToken)
                 .build();
 
-            HttpResponse<InputStream> exportResp = client.request(exportReq, InputStream.class);
-            if (exportResp.getBody() == null) {
-                throw new IllegalStateException("Superset /dashboard/export/ returned an empty response stream");
-            }
-
-            try (InputStream bodyStream = exportResp.getBody()) {
-                URI storageUri = runContext.storage().putFile(bodyStream, "superset-dashboards-export.zip");
-                return Output.builder()
-                    .uri(storageUri)
-                    .build();
-            }
+            client.request(exportReq, response -> {
+                try (var body = response.getBody()) {
+                    if (body == null) {
+                        throw new IllegalStateException("Superset /dashboard/export/ returned an empty response stream");
+                    }
+                    rUri.set(runContext.storage().putFile(body, "superset-dashboards-export.zip"));
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
         }
+
+        return Output.builder()
+            .uri(rUri.get())
+            .build();
     }
 
     @Builder

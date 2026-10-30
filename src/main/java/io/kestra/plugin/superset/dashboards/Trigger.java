@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.HttpResponse;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
@@ -17,7 +16,6 @@ import io.kestra.core.models.triggers.PollingTriggerInterface;
 import io.kestra.core.models.triggers.TriggerContext;
 import io.kestra.core.models.triggers.TriggerOutput;
 import io.kestra.core.models.triggers.TriggerService;
-import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.storages.kv.KVValueAndMetadata;
 import io.kestra.plugin.superset.SupersetConnection;
@@ -124,10 +122,10 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
 
     @Override
     public Optional<Execution> evaluate(ConditionContext conditionContext, TriggerContext context) throws Exception {
-        RunContext runContext = conditionContext.getRunContext();
+        var runContext = conditionContext.getRunContext();
         var rBaseUrl = SupersetConnection.resolveBaseUrl(runContext, this.url);
 
-        try (HttpClient client = HttpClient.builder().runContext(runContext).build()) {
+        try (var client = HttpClient.builder().runContext(runContext).build()) {
             var rAccessToken = SupersetConnection.authenticate(
                 client, runContext, rBaseUrl, this.username, this.password, this.provider
             );
@@ -135,10 +133,10 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
             var watermarkKey = "superset_wm_" + context.getFlowId().length() + "_" + context.getFlowId()
                 + "_" + this.getId().length() + "_" + this.getId();
             var kvStore = runContext.namespaceKv(context.getNamespace());
-            Optional<String> lastSeen = kvStore.getValue(watermarkKey).map(v -> v.value().toString());
+            var lastSeen = kvStore.getValue(watermarkKey).map(v -> v.value().toString());
 
             if (lastSeen.isEmpty()) {
-                DashboardListResponse firstPage = fetchDashboardPage(client, rBaseUrl, rAccessToken, 0, 1);
+                var firstPage = fetchDashboardPage(client, rBaseUrl, rAccessToken, 0, 1);
                 if (firstPage == null || firstPage.getResult() == null || firstPage.getResult().isEmpty()) {
                     return Optional.empty();
                 }
@@ -150,19 +148,19 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
             }
 
             var previousWatermark = lastSeen.get();
-            String maxChangedOn = previousWatermark;
+            var maxChangedOn = previousWatermark;
             List<DashboardItem> changedDashboards = new ArrayList<>();
-            int page = 0;
-            int pageSize = 100;
-            boolean hasMore = true;
+            var page = 0;
+            var pageSize = 100;
+            var hasMore = true;
 
             while (hasMore) {
-                DashboardListResponse response = fetchDashboardPage(client, rBaseUrl, rAccessToken, page, pageSize);
+                var response = fetchDashboardPage(client, rBaseUrl, rAccessToken, page, pageSize);
                 if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
                     break;
                 }
 
-                for (DashboardItem item : response.getResult()) {
+                for (var item : response.getResult()) {
                     if (item.getChangedOn() != null && item.getChangedOn().compareTo(previousWatermark) > 0) {
                         changedDashboards.add(item);
                         if (item.getChangedOn().compareTo(maxChangedOn) > 0) {
@@ -189,12 +187,12 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
 
             kvStore.put(watermarkKey, new KVValueAndMetadata(null, maxChangedOn));
 
-            Output output = Output.builder()
+            var output = Output.builder()
                 .dashboards(changedDashboards)
                 .count(changedDashboards.size())
                 .build();
 
-            Execution execution = TriggerService.generateExecution(this, conditionContext, context, output);
+            var execution = TriggerService.generateExecution(this, conditionContext, context, output);
             return Optional.of(execution);
         }
     }
@@ -207,13 +205,13 @@ public class Trigger extends AbstractTrigger implements PollingTriggerInterface,
         int pageSize
     ) throws Exception {
         var query = String.format("?q=(order_column:changed_on,order_direction:desc,page:%d,page_size:%d)", page, pageSize);
-        HttpRequest listReq = HttpRequest.builder()
+        var listReq = HttpRequest.builder()
             .uri(URI.create(baseUrl + "/dashboard/" + query))
             .method("GET")
             .addHeader("Authorization", "Bearer " + accessToken)
             .build();
 
-        HttpResponse<String> listResp = client.request(listReq, String.class);
+        var listResp = client.request(listReq, String.class);
         if (listResp.getBody() == null || listResp.getBody().isBlank()) {
             return null;
         }
