@@ -10,9 +10,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -75,5 +76,13 @@ class TriggerTest {
         changedOnRef.set("2026-01-02T00:00:00Z");
         var secondEval = trigger.evaluate(mocked.getKey(), mocked.getValue());
         assertTrue(secondEval.isPresent());
+
+        var variables = secondEval.get().getTrigger().getVariables();
+        assertEquals(1, variables.get("count"));
+        var dashboards = (List<?>) variables.get("dashboards");
+        assertEquals(1, dashboards.size());
+        var dashboard = (Map<?, ?>) dashboards.get(0);
+        assertEquals(1, dashboard.get("id"));
+        assertEquals("Exec", dashboard.get("dashboard_title"));
     }
 }

@@ -10,9 +10,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -64,7 +64,7 @@ class DataTest {
             .url(Property.ofValue(baseUrl))
             .username(Property.ofValue("admin"))
             .password(Property.ofValue("admin"))
-            .chartPayload(Property.ofValue(Map.of("queries", java.util.List.of(Map.of("row_limit", 10)))))
+            .chartPayload(Property.ofValue(Map.of("queries", List.of(Map.of("row_limit", 10)))))
             .fetchType(Property.ofValue(FetchType.STORE))
             .build();
         var chartOut = chartData.run(runContext);
