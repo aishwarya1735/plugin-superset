@@ -1,160 +1,86 @@
-package io.kestra.plugin.superset;
+package io.kestra.plugin.superset.datasets;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.HttpResponse;
-import io.kestra.core.http.client.HttpClient;
+import io.kestra.core.models.annotations.Example;
+import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.property.Property;
-import io.kestra.core.models.tasks.Task;
+import io.kestra.core.models.tasks.RunnableTask;
+import io.kestra.core.models.tasks.VoidOutput;
 import io.kestra.core.runners.RunContext;
-import io.kestra.core.serializers.JacksonMapper;
+import io.kestra.plugin.superset.SupersetConnection;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
-import lombok.*;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 
 import java.net.URI;
-import java.util.Map;
 
 @SuperBuilder
 @ToString
 @EqualsAndHashCode
 @Getter
 @NoArgsConstructor
-public abstract class SupersetConnection extends Task {
+@Schema(
+    title = "Refresh Superset dataset columns",
+    description = """
+        Refreshes the metadata and columns of a dataset in Apache Superset via `PUT /dataset/{id}/refresh`.
+        """
+)
+@Plugin(
+    examples = {
+        @Example(
+            full = true,
+            title = "Refresh a dataset after a data pipeline run",
+            code = """
+                id: refresh_superset_dataset
+                namespace: company.team
+                tasks:
+                  - id: refresh
+                    type: io.kestra.plugin.superset.datasets.Refresh
+                    url: "{{ secret('SUPERSET_URL') }}"
+                    username: "{{ secret('SUPERSET_USER') }}"
+                    password: "{{ secret('SUPERSET_PASSWORD') }}"
+                    datasetId: 12
+                """
+        )
+    }
+)
+public class Refresh extends SupersetConnection implements RunnableTask<VoidOutput> {
 
     @Schema(
-        title = "The Superset API base URL",
+        title = "The Superset dataset ID to refresh",
         description = """
-            Base URL of the Apache Superset API, including the `/api/v1` path suffix
-            (for example `https://superset.example.com/api/v1`).
+            Numeric identifier of the Apache Superset dataset whose column metadata should be synced.
             """
     )
     @NotNull
-    @PluginProperty(group = "connection")
-    protected Property<String> url;
+    @PluginProperty(group = "main")
+    private Property<Integer> datasetId;
 
-    @Schema(
-        title = "The Superset username",
-        description = """
-            Username used to authenticate against Apache Superset via `POST /security/login`.
-            """
-    )
-    @NotNull
-    @PluginProperty(group = "connection")
-    protected Property<String> username;
-
-    @Schema(
-        title = "The Superset password",
-        description = """
-            Password associated with the Superset username. Always store this value in a Kestra secret.
-            """
-    )
-    @NotNull
-    @PluginProperty(group = "connection", secret = true)
-    @ToString.Exclude
-    protected Property<String> password;
-
-    @Schema(
-        title = "Authentication provider",
-        description = """
-            Superset authentication provider passed to `/security/login`.
-            Supported values include `db` (default), `ldap`, `oauth`, and `oid`.
-            """
-    )
-    @Builder.Default
-    @PluginProperty(group = "connection")
-    protected Property<String> provider = Property.ofValue("db");
-
-    protected HttpClient createHttpClient(RunContext runContext) throws Exception {
-        return HttpClient.builder().runContext(runContext).build();
-    }
-
-    public static String resolveBaseUrl(RunContext runContext, Property<String> urlProp) throws Exception {
-        var rUrl = runContext.render(urlProp).as(String.class)
-            .orElseThrow(() -> new IllegalArgumentException("url is required"));
-        return rUrl.endsWith("/") ? rUrl.substring(0, rUrl.length() - 1) : rUrl;
-    }
-
-    protected String getBaseUrl(RunContext runContext) throws Exception {
-        return resolveBaseUrl(runContext, this.url);
-    }
-
-    public static String authenticate(
-        HttpClient client,
-        RunContext runContext,
-        String baseUrl,
-        Property<String> usernameProp,
-        Property<String> passwordProp,
-        Property<String> providerProp
-    ) throws Exception {
-        var rUsername = runContext.render(usernameProp).as(String.class)
-            .orElseThrow(() -> new IllegalArgumentException("username is required"));
-        var rPassword = runContext.render(passwordProp).as(String.class)
-            .orElseThrow(() -> new IllegalArgumentException("password is required"));
-        var rProvider = runContext.render(providerProp).as(String.class).orElse("db");
-
-        HttpRequest loginReq = HttpRequest.builder()
-            .uri(URI.create(baseUrl + "/security/login"))
-            .method("POST")
-            .body(HttpRequest.JsonRequestBody.builder().content(Map.of(
-                "username", rUsername,
-                "password", rPassword,
-                "provider", rProvider
-            )).build())
-            .build();
-
-        HttpResponse<String> loginResp = client.request(loginReq, String.class);
-        if (loginResp.getBody() == null || loginResp.getBody().isBlank()) {
-            throw new IllegalStateException("Superset login returned an empty response body, check url and credentials");
-        }
-
-        LoginResponse response = JacksonMapper.ofJson().readValue(loginResp.getBody(), LoginResponse.class);
-        if (response == null || response.getAccessToken() == null || response.getAccessToken().isBlank()) {
-            throw new IllegalStateException("Superset login returned no access_token, check username, password and provider");
-        }
-        return response.getAccessToken();
-    }
-
-    protected String login(HttpClient client, RunContext runContext) throws Exception {
+    @Override
+    public VoidOutput run(RunContext runContext) throws Exception {
+        var rId = runContext.render(this.datasetId).as(Integer.class)
+            .orElseThrow(() -> new IllegalArgumentException("datasetId is required"));
         var rBaseUrl = getBaseUrl(runContext);
-        return authenticate(client, runContext, rBaseUrl, this.username, this.password, this.provider);
-    }
 
-    protected String fetchCsrfToken(HttpClient client, RunContext runContext, String accessToken) throws Exception {
-        var rBaseUrl = getBaseUrl(runContext);
-        HttpRequest csrfReq = HttpRequest.builder()
-            .uri(URI.create(rBaseUrl + "/security/csrf_token/"))
-            .method("GET")
-            .addHeader("Authorization", "Bearer " + accessToken)
-            .build();
+        try (var client = createHttpClient(runContext)) {
+            var rToken = login(client, runContext);
+            var rCsrf = fetchCsrfToken(client, runContext, rToken);
 
-        HttpResponse<String> csrfResp = client.request(csrfReq, String.class);
-        if (csrfResp.getBody() == null || csrfResp.getBody().isBlank()) {
-            throw new IllegalStateException("Superset CSRF endpoint returned an empty response body");
+            var refreshReq = HttpRequest.builder()
+                .uri(URI.create(rBaseUrl + "/dataset/" + rId + "/refresh"))
+                .method("PUT")
+                .addHeader("Authorization", "Bearer " + rToken)
+                .addHeader("X-CSRFToken", rCsrf)
+                .build();
+
+            client.request(refreshReq, String.class);
         }
 
-        CsrfResponse response = JacksonMapper.ofJson().readValue(csrfResp.getBody(), CsrfResponse.class);
-        if (response == null || response.getResult() == null || response.getResult().isBlank()) {
-            throw new IllegalStateException("Superset CSRF endpoint returned no token in result field");
-        }
-        return response.getResult();
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class LoginResponse {
-        @JsonProperty("access_token")
-        private String accessToken;
-    }
-
-    @Getter
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public static class CsrfResponse {
-        private String result;
+        return null;
     }
 }

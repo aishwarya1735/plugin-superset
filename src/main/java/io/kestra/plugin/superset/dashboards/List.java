@@ -1,24 +1,28 @@
-package io.kestra.plugin.superset.datasets;
+package io.kestra.plugin.superset.dashboards;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.kestra.core.http.HttpRequest;
-import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
-import io.kestra.core.models.tasks.VoidOutput;
+import io.kestra.core.models.tasks.common.FetchType;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.FileSerde;
+import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.plugin.superset.SupersetConnection;
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.NotNull;
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.ToString;
+import lombok.*;
 import lombok.experimental.SuperBuilder;
+import reactor.core.publisher.Flux;
 
+import java.io.BufferedWriter;
+import java.io.FileWriter;
 import java.net.URI;
+import java.util.ArrayList;
 
 @SuperBuilder
 @ToString
@@ -26,62 +30,142 @@ import java.net.URI;
 @Getter
 @NoArgsConstructor
 @Schema(
-    title = "Refresh Superset dataset columns",
+    title = "List Superset dashboards",
     description = """
-        Refreshes the metadata and columns of a dataset in Apache Superset via `PUT /dataset/{id}/refresh`.
+        Retrieves dashboards configured in Apache Superset.
+        Pages through all results and returns them according to the selected `fetchType`.
         """
 )
 @Plugin(
     examples = {
         @Example(
             full = true,
-            title = "Refresh a dataset after a data pipeline run",
+            title = "List all dashboards",
             code = """
-                id: refresh_superset_dataset
+                id: list_dashboards
                 namespace: company.team
                 tasks:
-                  - id: refresh
-                    type: io.kestra.plugin.superset.datasets.Refresh
+                  - id: list
+                    type: io.kestra.plugin.superset.dashboards.List
                     url: "{{ secret('SUPERSET_URL') }}"
                     username: "{{ secret('SUPERSET_USER') }}"
                     password: "{{ secret('SUPERSET_PASSWORD') }}"
-                    datasetId: 12
                 """
         )
     }
 )
-public class Refresh extends SupersetConnection implements RunnableTask<VoidOutput> {
+public class List extends SupersetConnection implements RunnableTask<List.Output> {
 
     @Schema(
-        title = "The Superset dataset ID to refresh",
+        title = "How to return the output data",
         description = """
-            Numeric identifier of the Apache Superset dataset whose column metadata should be synced.
+            Controls how dashboards are returned: `FETCH` (all items in output, default),
+            `FETCH_ONE` (first item only), or `STORE` (written as an Amazon Ion file in internal storage).
             """
     )
-    @NotNull
+    @Builder.Default
     @PluginProperty(group = "main")
-    private Property<Integer> datasetId;
+    private Property<FetchType> fetchType = Property.ofValue(FetchType.FETCH);
 
     @Override
-    public VoidOutput run(RunContext runContext) throws Exception {
-        var rId = runContext.render(this.datasetId).as(Integer.class)
-            .orElseThrow(() -> new IllegalArgumentException("datasetId is required"));
+    public Output run(RunContext runContext) throws Exception {
         var rBaseUrl = getBaseUrl(runContext);
+        var rFetchMode = runContext.render(this.fetchType).as(FetchType.class).orElse(FetchType.FETCH);
 
-        try (HttpClient client = createHttpClient(runContext)) {
+        java.util.List<DashboardItem> allDashboards = new ArrayList<>();
+        var page = 0;
+        var pageSize = 100;
+        var hasMore = true;
+
+        try (var client = createHttpClient(runContext)) {
             var rToken = login(client, runContext);
-            var rCsrf = fetchCsrfToken(client, runContext, rToken);
 
-            HttpRequest refreshReq = HttpRequest.builder()
-                .uri(URI.create(rBaseUrl + "/dataset/" + rId + "/refresh"))
-                .method("PUT")
-                .addHeader("Authorization", "Bearer " + rToken)
-                .addHeader("X-CSRFToken", rCsrf)
-                .build();
+            while (hasMore) {
+                var queryParam = String.format("?q=(page:%d,page_size:%d)", page, pageSize);
+                var listReq = HttpRequest.builder()
+                    .uri(URI.create(rBaseUrl + "/dashboard/" + queryParam))
+                    .method("GET")
+                    .addHeader("Authorization", "Bearer " + rToken)
+                    .build();
 
-            client.request(refreshReq, String.class);
+                var listResp = client.request(listReq, String.class);
+                if (listResp.getBody() == null || listResp.getBody().isBlank()) {
+                    throw new IllegalStateException("Superset /dashboard/ returned an empty response body");
+                }
+
+                var response = JacksonMapper.ofJson().readValue(listResp.getBody(), DashboardListResponse.class);
+                if (response == null || response.getResult() == null || response.getResult().isEmpty()) {
+                    hasMore = false;
+                } else {
+                    allDashboards.addAll(response.getResult());
+                    if (response.getCount() != null && allDashboards.size() >= response.getCount()) {
+                        hasMore = false;
+                    } else {
+                        page++;
+                    }
+                }
+            }
         }
 
-        return null;
+        var outputBuilder = Output.builder()
+            .size(allDashboards.size());
+
+        switch (rFetchMode) {
+            case FETCH_ONE -> outputBuilder.dashboard(!allDashboards.isEmpty() ? allDashboards.getFirst() : null);
+            case FETCH -> outputBuilder.dashboards(allDashboards);
+            case STORE -> {
+                var tempFile = runContext.workingDir().createTempFile(".ion").toFile();
+                try (var writer = new BufferedWriter(new FileWriter(tempFile))) {
+                    FileSerde.writeAll(writer, Flux.fromIterable(allDashboards)).block();
+                }
+                var storageUri = runContext.storage().putFile(tempFile);
+                outputBuilder.uri(storageUri);
+            }
+            default -> {
+            }
+        }
+
+        return outputBuilder.build();
+    }
+
+    @Builder
+    @Getter
+    public static class Output implements io.kestra.core.models.tasks.Output {
+        @Schema(title = "URI of stored dashboards in Kestra internal storage (when STORE)")
+        private URI uri;
+
+        @Schema(title = "The retrieved dashboards (when FETCH)")
+        private java.util.List<DashboardItem> dashboards;
+
+        @Schema(title = "First retrieved dashboard (when FETCH_ONE)")
+        private DashboardItem dashboard;
+
+        @Schema(title = "The total count of dashboards retrieved")
+        private Integer size;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DashboardListResponse {
+        private Integer count;
+        private java.util.List<DashboardItem> result;
+    }
+
+    @Getter
+    @NoArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class DashboardItem {
+        @Schema(title = "Dashboard ID")
+        private Integer id;
+
+        @JsonProperty("dashboard_title")
+        @Schema(title = "Dashboard title")
+        private String dashboardTitle;
+
+        @JsonProperty("changed_on_utc")
+        @JsonAlias("changed_on")
+        @Schema(title = "Last change timestamp")
+        private String changedOn;
     }
 }
